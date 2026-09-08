@@ -93,24 +93,32 @@ buys three things:
 3. **Wholesale replacement on update.** `vendor.py` can `rm -rf libs/sokol/sokol`
    and re-copy, with no risk of leaving a deleted upstream file behind.
 
-**`libs/<name>/<name>/` is the *only* directory `vendor.py` writes to**, for
-every library without exception — which is why SoLoud's upstream `src/` tree
-goes *inside* it (`libs/soloud/soloud/src/…`) rather than at
-`libs/soloud/src/`. `libs/<name>/src/` then means one thing everywhere in the
-repo: code we wrote. Without that rule the same path would be vendor-owned for
-SoLoud and hand-written for sokol, and a wrong path in `vendor.py`'s wipe step
-would silently delete our own impl TUs.
+**`libs/<name>/<name>/` is the only subtree `vendor.py` deletes and re-creates**,
+for every library without exception — which is why SoLoud's upstream `src/` tree
+goes *inside* it (`libs/soloud/soloud/src/…`) rather than at `libs/soloud/src/`.
+`libs/<name>/src/` then means one thing everywhere in the repo: code we wrote.
+Without that rule the same path would be vendor-owned for SoLoud and
+hand-written for sokol, and a wrong path in `vendor.py`'s wipe step would
+silently delete our own impl TUs.
+
+`vendor.py` does write three things *outside* that subtree, but only ever by
+rewriting a specific file, never by deleting a directory: `tools/vendor.toml`,
+`libs/<name>/VERSION`, and `libs/<name>/LICENSE` (copied from upstream). Nothing
+else in the repository is machine-written.
 
 This is the `include/<lib>/` refinement identified in
 [apple2tc.md §6](../../../apple2tc.md) — present in neither surveyed repo —
 without the file-relocation cost that made it awkward there.
 
 **SoLoud** is the one library that additionally needs a **PRIVATE** include
-directory, because its sources sit beside rather than inside that directory.
-(Our own `libs/sokol/src/*.c` do too, but they are ours to write, so they use the
+directory. Its upstream sources live at `libs/soloud/soloud/src/**`, nested
+*below* the header directory rather than in it, and a bare `#include "soloud.h"`
+searches only the including file's own directory, never an ancestor. (Our own
+`libs/sokol/src/*.c` need no such entry: they are ours to write, so they use the
 `<sokol/...>` form and the PUBLIC root already covers them.)
 
-- `libs/soloud/src/**/*.cpp` — upstream sources that include `"soloud.h"` bare.
+- `libs/soloud/soloud/src/**/*.cpp` — upstream sources that include
+  `"soloud.h"` bare.
   These need `PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/soloud`. SoLoud's audiosource
   files also include its own bundled `"stb_vorbis.h"`, `"dr_wav.h"`,
   `"dr_mp3.h"`, `"dr_flac.h"`, which live beside them inside
@@ -190,7 +198,7 @@ consumer that already vendors sokol itself. And CMake hard-errors on an unknown
 | backend | Linux | macOS | Windows | Emscripten | declares `sokol_app`? |
 |---|---|---|---|---|---|
 | `glcore` | yes (GLX) | yes | yes | — | yes |
-| `gles3` | — | — | — | yes | yes |
+| `gles3` | yes (EGL) | — | — | yes | yes |
 | `metal` | — | yes | — | — | yes |
 | `d3d11` | — | — | yes | — | yes |
 | `dummy` | yes | yes | yes | yes | **no** |
@@ -459,8 +467,8 @@ so there is no collision even when both are linked.
 ### 5.3 soloud
 
 - `libs/soloud/soloud/` ← upstream `include/*.h`
-- `libs/soloud/src/` ← upstream `src/{core,audiosource,filter,backend}`,
-  structure preserved
+- `libs/soloud/soloud/src/` ← upstream `src/{core,audiosource,filter,backend}`,
+  structure preserved. Nested inside the vendor-owned subtree, per §2.1.
 - Excluded: `demos/`, `docsrc/`, `contrib/`, `scripts/`, `glue/`, `build/`, and
   upstream's own `.gitmodules` — that last exclusion is what keeps game-lib
   exactly **one** submodule level deep for its consumers.
@@ -474,12 +482,24 @@ so there is no collision even when both are linked.
   compilation) and its source file is added conditionally.
 - SoLoud's two SDL2 integrations are not offered, per §3.2.
 - `PRIVATE` include dir `${CMAKE_CURRENT_SOURCE_DIR}/soloud`, per §2.1.
-- **System links.** "miniaudio needs no development packages" is not the same as
-  "needs no libraries": miniaudio's own documentation states the Linux build
-  "requires linking to `-ldl`, `-lpthread` and `-lm`". So with the default
-  backend, `gamelib_soloud` links `dl m` and the `-pthread` flag on Linux, and
-  nothing on macOS or Windows. `alsa` adds `asound`; `coreaudio` adds
-  `AudioToolbox`; `wasapi` needs nothing on MSVC.
+- **System links**, split into what SoLoud's *core* needs and what each backend
+  *adds*. The core needs threads and math whatever the backend: `soloud_thread.cpp`
+  calls `pthread_create()`/`pthread_join()` on Unix and `soloud.cpp` uses
+  `sqrt()`/`floor()`. So `null` and `nosound` are not dependency-free.
+
+  | | Linux | macOS | Windows (MSVC) |
+  |---|---|---|---|
+  | **core, every backend** | `m` + the `-pthread` flag | `m` | nothing |
+  | `miniaudio` adds | `dl` | — | — |
+  | `alsa` adds | `asound` | — | — |
+  | `coreaudio` adds | — | `AudioToolbox` | — |
+  | `wasapi` adds | — | — | nothing |
+  | `null`, `nosound` add | — | — | — |
+
+  "miniaudio needs no development packages" is not the same as "needs no
+  libraries": miniaudio's own documentation states the Linux build "requires
+  linking to `-ldl`, `-lpthread` and `-lm`", and the `dl` there is miniaudio's
+  own (`ma_dlopen`), while pthread and m are the core's.
 - SoLoud's bundled `stb_vorbis.c` stays in its build. See §4.2 for why the pack
   must not also ship a standalone `gamelib::stb_vorbis`.
 
@@ -581,8 +601,22 @@ Both lines are load-bearing:
 **`LANGUAGES C`, with CXX enabled on demand.** `project(... LANGUAGES C CXX)`
 would force every consumer through C++ compiler detection, including one that
 selects only C libraries; `EXCLUDE_FROM_ALL` cannot suppress that. So game-lib
-declares C only and calls `enable_language(CXX)` from `libs/CMakeLists.txt`
-when any C++ library (`imgui`, `soloud`, `sokol_imgui`) is enabled.
+declares C only, and calls `enable_language(CXX)` **from its own root
+CMakeLists, before `add_subdirectory(libs)` and `add_subdirectory(examples)`**,
+whenever any C++ library (`imgui`, `soloud`, `sokol_imgui`) is enabled.
+
+The placement is not free choice. CMake requires a language to be enabled in the
+highest directory common to every target using it, and game-lib's C++ *examples*
+live under `examples/` while its C++ *libraries* live under `libs/` — siblings
+whose only common ancestor is game-lib's root. Enabling CXX inside
+`libs/CMakeLists.txt` would satisfy the libraries and leave the examples
+invalid.
+
+Note the consequence for a consumer who wants to avoid C++ compiler detection
+entirely: linking only C targets does **not** achieve it, because the C++
+library options default to `ON` and the decision is made at configure time. Such
+a consumer must set `GAMELIB_IMGUI=OFF` and `GAMELIB_SOLOUD=OFF` explicitly. The
+README says so.
 
 Two documented consequences of the nested `project()`:
 
@@ -698,14 +732,21 @@ display.
    is invisible to the parent and so cannot be detected by comparing the
    parent's variables:
    a. Under `--trace-expand --trace-redirect=<file>`, no prohibited command
-      (`include_directories`, `add_definitions`, `link_libraries`, or `set` of
-      `CMAKE_*_FLAGS` / `CMAKE_*_STANDARD` / `CMAKE_EXECUTABLE_SUFFIX`) appears
-      with a game-lib-owned source location.
+      appears with a game-lib-owned source location. The prohibited set is
+      `include_directories`, `add_definitions`, `link_libraries`, `set` of
+      `CMAKE_*_FLAGS` / `CMAKE_*_STANDARD` / `CMAKE_EXECUTABLE_SUFFIX`, and
+      **any `set(... PARENT_SCOPE)`** — the last covers the one way a
+      directory-scoped write can escape upward. Separately, every target the
+      configure creates under game-lib must be named `gamelib_*`, checked by
+      walking `BUILDSYSTEM_TARGETS` on game-lib's directories.
    b. No cache entry that existed before `add_subdirectory(game-lib)` has
-      changed value, and every newly created entry either begins with `GAMELIB_`
-      or was created by one of CMake's own discovery modules. Asserting the
-      whole cache is unchanged would be wrong — §6.1's `project()` and §3.2's
-      options both legitimately add entries.
+      changed value, and every newly created entry is one of: an entry beginning
+      with `GAMELIB_`; an entry created by one of CMake's own discovery modules;
+      or one of the three `project()` writes, which are **`game-lib_SOURCE_DIR`,
+      `game-lib_BINARY_DIR` and `game-lib_IS_TOP_LEVEL`** (verified empirically:
+      `project()` writes these as `STATIC` cache entries even for a nested
+      call). Asserting the whole cache is unchanged would be wrong — §6.1's
+      `project()` and §3.2's options both legitimately add entries.
 
 ## 9. Explicitly out of scope
 
@@ -734,6 +775,16 @@ ready for implementation". Every finding was independently verified against the
 sources before being acted on; none was contested. Twelve resolutions were
 accepted on the first pass, two (§3.3's rule statement and §3.2's option
 semantics) were returned as insufficient and revised.
+
+A third round caught six further problems, five of which the amendments
+themselves had introduced: stale SoLoud paths left behind by the move to a
+single vendor-owned subtree, a vendor-ownership rule that contradicted
+`vendor.py`'s own metadata writes, a backend matrix that disagreed with the link
+table about Linux GLES3, SoLoud's core dependencies misattributed to its default
+backend, `enable_language(CXX)` placed in `libs/` where it could not cover the
+examples, and a cache whitelist that would have rejected `project()`'s own
+entries. The lesson recorded for the implementer: a spec edit that moves a path
+or narrows a rule has to be followed through every table that repeats it.
 
 Three of the findings corrected outright errors of fact in the first draft, and
 are recorded here because each is the kind of mistake that would otherwise be
