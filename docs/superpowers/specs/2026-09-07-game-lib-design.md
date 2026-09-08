@@ -25,13 +25,12 @@ Four upstream projects:
 |---|---|---|
 | [sokol](https://github.com/floooh/sokol) | zlib | app, gfx, glue, log, time, audio, util/imgui |
 | [Dear ImGui](https://github.com/ocornut/imgui) | MIT | core (no backends — sokol_imgui is the backend) |
-| [SoLoud](https://github.com/jarikomppa/soloud) | zlib | include/ + src/ (core, audiosource, filter, backend) |
-| [stb](https://github.com/nothings/stb) | MIT / public domain | 8 headers, listed in §5.4 |
+| [miniaudio](https://github.com/mackron/miniaudio) | Unlicense *or* MIT-0 | `miniaudio.h` (one header) |
+| [stb](https://github.com/nothings/stb) | MIT / public domain | 8 headers + `stb_vorbis.c`, listed in §5.4 |
 
 Deliberately excluded: **cimgui** (needed only to call ImGui from C or to bind
 an FFI; our sokol_imgui bridge TU is C++, so plain Dear ImGui suffices),
-**sokol_gl**, and **stb_vorbis** (which would collide destructively with
-SoLoud's modified copy — see §4.2).
+**sokol_gl**, and **SoLoud** (see §5.3 — miniaudio replaced it).
 
 Platforms: Linux, macOS, Windows, Emscripten. Not Android, not iOS.
 
@@ -57,17 +56,16 @@ game-lib/
     imgui/
       CMakeLists.txt  VERSION  LICENSE
       imgui/                  VENDOR-OWNED: upstream headers and .cpp together
-    soloud/
+    miniaudio/
       CMakeLists.txt  VERSION  LICENSE
-      soloud/                 VENDOR-OWNED: upstream include/ at the top,
-                              upstream src/{core,audiosource,filter,backend}
-                              beneath it
+      miniaudio/              VENDOR-OWNED: miniaudio.h
+      src/                    ours: the impl TU
     stb/
       CMakeLists.txt  VERSION  LICENSE
       stb/                    VENDOR-OWNED: verbatim upstream headers
   examples/
     CMakeLists.txt
-    clear/  imgui/  beep/  soloud/  image/
+    clear/  imgui/  beep/  audio/  image/
   tools/
     vendor.py
     vendor.toml               the single source of truth for pinning
@@ -84,7 +82,7 @@ public include directory is that directory's **parent**. This single decision
 buys three things:
 
 1. **Namespaced includes.** The consumer writes `#include <sokol/sokol_gfx.h>`,
-   `<imgui/imgui.h>`, `<soloud/soloud.h>`, `<stb/stb_image.h>`. A pack that
+   `<imgui/imgui.h>`, `<miniaudio/miniaudio.h>`, `<stb/stb_image.h>`. A pack that
    dumps thirty headers into the consumer's global include space is antisocial;
    this makes the origin of every header obvious at the use site.
 2. **Upstream files are never edited or renamed.** Upstream's own sibling
@@ -94,12 +92,10 @@ buys three things:
    and re-copy, with no risk of leaving a deleted upstream file behind.
 
 **`libs/<name>/<name>/` is the only subtree `vendor.py` deletes and re-creates**,
-for every library without exception — which is why SoLoud's upstream `src/` tree
-goes *inside* it (`libs/soloud/soloud/src/…`) rather than at `libs/soloud/src/`.
-`libs/<name>/src/` then means one thing everywhere in the repo: code we wrote.
-Without that rule the same path would be vendor-owned for SoLoud and
-hand-written for sokol, and a wrong path in `vendor.py`'s wipe step would
-silently delete our own impl TUs.
+for every library without exception. `libs/<name>/src/` then means one thing
+everywhere in the repo: code we wrote. Without that rule the same path could be
+vendor-owned for one library and hand-written for another, and a wrong path in
+`vendor.py`'s wipe step would silently delete our own impl TUs.
 
 `vendor.py` does write three things *outside* that subtree, but only ever by
 rewriting a specific file, never by deleting a directory: `tools/vendor.toml`,
@@ -110,26 +106,20 @@ This is the `include/<lib>/` refinement identified in
 [apple2tc.md §6](../../../apple2tc.md) — present in neither surveyed repo —
 without the file-relocation cost that made it awkward there.
 
-**SoLoud** is the one library that additionally needs a **PRIVATE** include
-directory. Its upstream sources live at `libs/soloud/soloud/src/**`, nested
-*below* the header directory rather than in it, and a bare `#include "soloud.h"`
-searches only the including file's own directory, never an ancestor. (Our own
-`libs/sokol/src/*.c` need no such entry: they are ours to write, so they use the
-`<sokol/...>` form and the PUBLIC root already covers them.)
+**No library needs a PRIVATE include directory.** Every vendored library here is
+either header-only or header-plus-our-own-TU, and our TUs use the
+`<name/header.h>` form that the PUBLIC root already provides. (This was not true
+of an earlier draft that vendored SoLoud, whose upstream `.cpp` files include
+`"soloud.h"` bare from nested subdirectories; replacing it with miniaudio
+removed the only case.)
 
-- `libs/soloud/soloud/src/**/*.cpp` — upstream sources that include
-  `"soloud.h"` bare.
-  These need `PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/soloud`. SoLoud's audiosource
-  files also include its own bundled `"stb_vorbis.h"`, `"dr_wav.h"`,
-  `"dr_mp3.h"`, `"dr_flac.h"`, which live beside them inside
-  `src/audiosource/wav/` and so resolve quote-relative.
-
-  **A PRIVATE include directory hides a header path; it does not isolate a
-  linker symbol.** SoLoud's bundled decoders export ordinary global symbols, so
-  keeping their headers private does *not* make it safe to ship a second copy of
-  the same library elsewhere in the pack. That is why there is no
-  `gamelib::stb_vorbis` (§4.2), and the same caution applies to any future
-  target that would duplicate `dr_wav`, `dr_mp3` or `dr_flac`.
+**A standing caution, since it cost a whole finding once.** A PRIVATE include
+directory hides a *header path*; it does not isolate a *linker symbol*. Before
+adding any library that bundles its own copy of another — audio libraries
+routinely bundle `stb_vorbis` and the `dr_libs` — check whether the pack would
+then define the same symbols twice. Two copies of one C library in two archives
+is at best a duplicate-symbol error and at worst a silent mis-resolution, which
+is what §5.3 records about the SoLoud that used to be here.
 
 ## 3. The consumer contract
 
@@ -159,9 +149,9 @@ consumer that already vendors sokol itself. And CMake hard-errors on an unknown
 - `EXCLUDE_FROM_ALL` on the `add_subdirectory` keeps game-lib's targets out of
   **the consumer's default build target**. That is the whole of the promise. It
   is *not* "nothing compiles unless linked": an explicitly requested target
-  (`cmake --build . --target gamelib_soloud`) still builds, an inter-target
+  (`cmake --build . --target gamelib_miniaudio`) still builds, an inter-target
   dependency still builds, and the subdirectory is still **processed at
-  configure time** regardless. In practice a consumer who never links SoLoud
+  configure time** regardless. In practice a consumer who never links miniaudio
   never compiles it, but the guarantee is the narrow one.
 - Because configure-time processing always happens, **no library's CMakeLists
   may perform a configure-time check that fails when its own system
@@ -172,7 +162,7 @@ consumer that already vendors sokol itself. And CMake hard-errors on an unknown
   discovery must guard its own use. Criterion 3 depends on this.
 - Per-library options default `ON` and exist only so a consumer can stop a
   library's CMake being parsed at all:
-  `GAMELIB_SOKOL`, `GAMELIB_IMGUI`, `GAMELIB_SOLOUD`, `GAMELIB_STB`.
+  `GAMELIB_SOKOL`, `GAMELIB_IMGUI`, `GAMELIB_MINIAUDIO`, `GAMELIB_STB`.
 - **Declaration is dependency-aware.** A target is declared only if everything
   it needs was declared: `GAMELIB_IMGUI=OFF` means `gamelib_sokol_imgui` is not
   declared at all, and an example is declared only when every target it needs
@@ -185,13 +175,14 @@ consumer that already vendors sokol itself. And CMake hard-errors on an unknown
   - `GAMELIB_SOKOL_BACKEND` = `auto` (default) | `glcore` | `gles3` | `metal` |
     `d3d11` | `dummy`. `auto` resolves to metal on macOS, d3d11 on Windows,
     glcore on Linux, gles3 on Emscripten.
-  - `GAMELIB_SOLOUD_BACKEND` = `miniaudio` (default) | `alsa` | `coreaudio` |
-    `wasapi` | `null` | `nosound`. miniaudio is the default because it is the
-    only backend that works on all three desktop platforms with no system
-    development package installed. SoLoud's two SDL2 integrations are
-    deliberately not offered: `WITH_SDL2` needs a second source file
-    (`soloud_sdl2_dll.c`) for dynamic loading while `WITH_SDL2_STATIC` links
-    directly, and miniaudio already covers every supported platform.
+  - `GAMELIB_MINIAUDIO_RUNTIME_LINKING` = `OFF` (default) | `ON`. macOS only;
+    see §5.3. `OFF` compiles with `MA_NO_RUNTIME_LINKING` and links the three
+    CoreAudio frameworks explicitly, which is what an app that will be notarized
+    needs.
+
+  There is deliberately **no audio backend option**. miniaudio compiles in every
+  backend its platform offers and selects at run time, so the SoLoud-style
+  compile-time backend choice has no equivalent and needs none.
 
 #### Supported backend x platform
 
@@ -256,7 +247,7 @@ This rule is testable; see §8, criterion 6.
 | `gamelib::sokol_audio` | `src/sokol_audio.c` | — | Linux `asound` + `-pthread`; macOS `AudioToolbox`; Windows/MSVC none |
 | `gamelib::sokol_imgui` | `src/sokol_imgui.cc` (**C++**) | `sokol_app`, `sokol_gfx`, `imgui` | none |
 | `gamelib::imgui` | 5 upstream `.cpp` | — | none |
-| `gamelib::soloud` | upstream core/audiosource/filter + 1 backend | — | per backend — see §5.3 |
+| `gamelib::miniaudio` | `src/miniaudio.c` | — | Linux `dl m` + `-pthread`; macOS see §5.3; Windows none |
 | `gamelib::stb_image` | generated TU | — | `m` (§5.4) |
 | `gamelib::stb_image_write` | generated TU | — | `m` |
 | `gamelib::stb_truetype` | generated TU | — | `m` |
@@ -265,6 +256,7 @@ This rule is testable; see §8, criterion 6.
 | `gamelib::stb_sprintf` | generated TU | — | `m` |
 | `gamelib::stb_perlin` | generated TU | — | `m` |
 | `gamelib::stb_easy_font` | generated TU | — | `m` |
+| `gamelib::stb_vorbis` | `stb/stb_vorbis.c` directly | — | `m` |
 
 **Every target declares the libraries its own implementation needs**, not the
 libraries its typical companions happen to provide. `sokol_gfx.h` has a "Link
@@ -291,30 +283,29 @@ in `sokol_app`. `stm_now()` is what every frame loop needs for timing, windowed
 or not; making it reachable only by linking a windowing library would defeat the
 split above. Each is a generated two-line TU with no dependencies.
 
-### 4.2 Why eight separate stb targets
+### 4.2 Why nine separate stb targets
 
 Each stb header compiles to its own TU and gets its own target, so a consumer
-that wants `stb_image` does not compile `stb_truetype`. All eight are *generated
-by a loop* over the list in §5.4 — eight targets from eight list entries, not
-eight hand-written CMake blocks.
+that wants `stb_image` does not compile `stb_truetype`. Eight of the nine are
+*generated by a loop* over the list in §5.4 — eight targets from eight list
+entries, not eight hand-written CMake blocks. `stb_vorbis` is the exception:
+upstream ships it as `stb_vorbis.c`, not a header, so it is compiled directly.
 
 The alternative considered and rejected: one `gamelib::stb` static archive
-containing eight objects, relying on the linker to pull only referenced members.
-That yields the same binary, but still *compiles* all eight whenever any is
+containing nine objects, relying on the linker to pull only referenced members.
+That yields the same binary, but still *compiles* all nine whenever any is
 linked.
 
-**`stb_vorbis` is deliberately absent, and must stay absent.** SoLoud vendors
-its own copy of `stb_vorbis.c` and compiles it into its archive with ordinary
-global symbols. That copy is not a duplicate — it is *semantically modified*: it
-includes `soloud_file_hack_on.h`, which `#define`s `FILE` to
-`Soloud_Filehack` along with `fread`, `fseek`, `ftell` and friends, and SoLoud
-passes its own file objects to `stb_vorbis_open_file()`. So SoLoud's
-`stb_vorbis_open_file` and upstream's share a C symbol name but take different
-pointer types. Shipping a `gamelib::stb_vorbis` alongside `gamelib::soloud`
-risks not a duplicate-symbol *error* but a linker silently resolving SoLoud's
-call to the upstream decoder, which would then dereference a `Soloud_Filehack*`
-as a `FILE*`. PRIVATE include directories do not help: they isolate header
-paths, not linker symbols. Consumers needing Ogg decoding use SoLoud.
+`gamelib::stb_vorbis` is the one target whose usage is not
+`#include <stb/x.h>`. A consumer includes it upstream-style:
+
+```c
+#define STB_VORBIS_HEADER_ONLY
+#include <stb/stb_vorbis.c>
+```
+
+It pairs directly with `gamelib::miniaudio`, whose built-in decoders cover WAV,
+MP3 and FLAC but not Ogg Vorbis. The README must say both things.
 
 ### 4.3 sokol_imgui is C++
 
@@ -464,44 +455,77 @@ No `backends/` — sokol_imgui *is* the backend. `imgui_demo.cpp` is kept:
 imgui's bundled `imstb_truetype.h` and our `stb/stb_truetype.h` differ in name,
 so there is no collision even when both are linked.
 
-### 5.3 soloud
+### 5.3 miniaudio
 
-- `libs/soloud/soloud/` ← upstream `include/*.h`
-- `libs/soloud/soloud/src/` ← upstream `src/{core,audiosource,filter,backend}`,
-  structure preserved. Nested inside the vendor-owned subtree, per §2.1.
-- Excluded: `demos/`, `docsrc/`, `contrib/`, `scripts/`, `glue/`, `build/`, and
-  upstream's own `.gitmodules` — that last exclusion is what keeps game-lib
-  exactly **one** submodule level deep for its consumers.
-- `audiosource/openmpt` is excluded (requires external libopenmpt). All other
-  audiosources are included.
-- All backend sources are vendored, but only the selected one compiles —
-  `soloud.cpp` gates each on `WITH_MINIAUDIO` / `WITH_ALSA` / `WITH_COREAUDIO` /
-  `WITH_WASAPI` / … and hard-errors if none is defined. Switching backend
-  therefore needs no re-vendor.
-- The selected backend's define is `PRIVATE` (it affects only SoLoud's own
-  compilation) and its source file is added conditionally.
-- SoLoud's two SDL2 integrations are not offered, per §3.2.
-- `PRIVATE` include dir `${CMAKE_CURRENT_SOURCE_DIR}/soloud`, per §2.1.
-- **System links**, split into what SoLoud's *core* needs and what each backend
-  *adds*. The core needs threads and math whatever the backend: `soloud_thread.cpp`
-  calls `pthread_create()`/`pthread_join()` on Unix and `soloud.cpp` uses
-  `sqrt()`/`floor()`. So `null` and `nosound` are not dependency-free.
+Vendored as a single file, `libs/miniaudio/miniaudio/miniaudio.h`, plus our
+`libs/miniaudio/src/miniaudio.c`:
 
-  | | Linux | macOS | Windows (MSVC) |
-  |---|---|---|---|
-  | **core, every backend** | `m` + the `-pthread` flag | `m` | nothing |
-  | `miniaudio` adds | `dl` | — | — |
-  | `alsa` adds | `asound` | — | — |
-  | `coreaudio` adds | — | `AudioToolbox` | — |
-  | `wasapi` adds | — | — | nothing |
-  | `null`, `nosound` add | — | — | — |
+```c
+#define MINIAUDIO_IMPLEMENTATION
+#include <miniaudio/miniaudio.h>
+```
 
-  "miniaudio needs no development packages" is not the same as "needs no
-  libraries": miniaudio's own documentation states the Linux build "requires
-  linking to `-ldl`, `-lpthread` and `-lm`", and the `dl` there is miniaudio's
-  own (`ma_dlopen`), while pthread and m are the core's.
-- SoLoud's bundled `stb_vorbis.c` stays in its build. See §4.2 for why the pack
-  must not also ship a standalone `gamelib::stb_vorbis`.
+Pure C, so this target does not pull in the C++ requirement of §6.1.
+
+**No backend option**, per §3.2: miniaudio compiles every backend its platform
+offers (WASAPI, CoreAudio, ALSA, PulseAudio, JACK, sndio, Web Audio…) and
+selects at run time. Nothing to configure and nothing to get wrong.
+
+**System links**, from miniaudio's own "Building" section:
+
+| platform | links |
+|---|---|
+| Linux | `dl m` + the `-pthread` flag ("You do not need any development packages") |
+| Windows | nothing — "compile cleanly on all popular compilers without the need to configure any include paths nor link to any libraries" |
+| macOS, default (`GAMELIB_MINIAUDIO_RUNTIME_LINKING=OFF`) | `MA_NO_RUNTIME_LINKING` + `CoreFoundation`, `CoreAudio`, `AudioToolbox` |
+| macOS, `...=ON` | nothing |
+| Emscripten | nothing; it emits Web Audio JavaScript directly |
+
+Three constraints that are easy to miss and must be encoded in the CMake:
+
+1. **The macOS default is the non-obvious one.** Left to itself miniaudio links
+   frameworks at *run time*, and its documentation warns that "your application
+   may not pass Apple's notarization process" as a result. A pack meant for
+   shipping games should default to the notarizable configuration, so
+   `GAMELIB_MINIAUDIO_RUNTIME_LINKING` defaults to `OFF` — i.e. compile with
+   `MA_NO_RUNTIME_LINKING` and link the three frameworks explicitly. The option
+   exists for a consumer who prefers upstream's default.
+2. **Emscripten forbids a C standard flag.** miniaudio states: "You cannot use
+   `-std=c*` compiler flags, nor `-ansi`. This only applies to the Emscripten
+   build." So `gamelib_miniaudio` must never carry `target_compile_features(...
+   c_std_*)` — or anything else that makes CMake emit `-std=`— under Emscripten.
+   This is the one place the pack's own conventions have to yield to a library.
+3. **Static linking only.** miniaudio "is not ABI compatible between any
+   release, including bug fix releases", and recommends linking statically.
+   That is already the pack's model, but it is a reason not to relax it.
+
+Ogg Vorbis is not among miniaudio's built-in decoders (WAV, MP3 and FLAC are).
+`gamelib::stb_vorbis` exists to fill that gap; see §4.2.
+
+#### Why not SoLoud
+
+An earlier draft of this spec vendored [SoLoud](https://github.com/jarikomppa/soloud)
+instead. It was replaced on 2026-09-08, on these grounds:
+
+- **SoLoud's default backend already *was* miniaudio** — it vendors its own copy
+  of `miniaudio.h` under `src/backend/miniaudio/`. The pack was therefore
+  shipping miniaudio wrapped in a second layer, rather than avoiding it.
+- That layer is unmaintained: last upstream commit 2024-08-13, 122 open issues,
+  against miniaudio's 2026-03-03 and 7.
+- ~200 vendored files became 2. The licence became more permissive (Unlicense or
+  MIT-0, versus zlib). The spatial-audio API became better: miniaudio has
+  listeners, cones, doppler and attenuation models where SoLoud has basic
+  panning.
+- Removing SoLoud is what allowed `gamelib::stb_vorbis` back into the catalogue
+  (§4.2), and stb_vorbis is exactly what miniaudio needs for Ogg.
+
+**What was given up, honestly:** SoLoud's generated sound sources have no
+miniaudio equivalent — `sfxr` (procedural retro sound effects), `speech` (a
+speech synthesiser), and the chiptune sources `ay`, `monotone`, `tedsid`, `vic`,
+`vizsn`. If any of those is wanted later, note that SoLoud cannot simply be
+added back alongside: it would compile its own `ma_*` symbols into a second
+archive, which is the same collision class described in §2.1. It would have to
+be ported onto the pack's miniaudio copy.
 
 ### 5.4 stb
 
@@ -526,8 +550,11 @@ dependency for a header that needs no math functions; it hides no correctness
 distinction. The rule is scoped to the four supported platforms and must be
 revisited if a fifth is added.
 
-`stb_vorbis.c` is **not** vendored and there is no `gamelib::stb_vorbis`; see
-§4.2.
+`stb_vorbis.c` is vendored alongside them and compiled directly as
+`gamelib::stb_vorbis`'s own source — upstream ships it as a `.c`, not a header,
+so it is not part of the generated-target list above. It is the pack's Ogg
+Vorbis decoder, which `gamelib::miniaudio` does not include; see §4.2 for the
+consumer-side include form.
 
 ## 6. CMake helpers
 
@@ -588,7 +615,7 @@ project(game-lib LANGUAGES C)
 Both lines are load-bearing:
 
 - **3.21** is the floor for `PROJECT_IS_TOP_LEVEL` (§8). It also carries
-  **CMP0077 NEW**, without which §3.2's `set(GAMELIB_SOLOUD OFF)` before
+  **CMP0077 NEW**, without which §3.2's `set(GAMELIB_MINIAUDIO OFF)` before
   `add_subdirectory` silently does nothing: `option()` under the OLD behaviour
   deletes the parent's normal variable and creates a cache entry set to `ON`.
   `target_link_options` separately needs 3.13.
@@ -603,7 +630,8 @@ would force every consumer through C++ compiler detection, including one that
 selects only C libraries; `EXCLUDE_FROM_ALL` cannot suppress that. So game-lib
 declares C only, and calls `enable_language(CXX)` **from its own root
 CMakeLists, before `add_subdirectory(libs)` and `add_subdirectory(examples)`**,
-whenever any C++ library (`imgui`, `soloud`, `sokol_imgui`) is enabled.
+whenever any C++ library is enabled. There are only two: `imgui` and
+`sokol_imgui`. sokol, miniaudio and stb are all pure C.
 
 The placement is not free choice. CMake requires a language to be enabled in the
 highest directory common to every target using it, and game-lib's C++ *examples*
@@ -615,7 +643,8 @@ invalid.
 Note the consequence for a consumer who wants to avoid C++ compiler detection
 entirely: linking only C targets does **not** achieve it, because the C++
 library options default to `ON` and the decision is made at configure time. Such
-a consumer must set `GAMELIB_IMGUI=OFF` and `GAMELIB_SOLOUD=OFF` explicitly. The
+a consumer must set `GAMELIB_IMGUI=OFF` explicitly — that one option is now the
+whole of it, since imgui and its sokol bridge are the only C++ in the pack. The
 README says so.
 
 Two documented consequences of the nested `project()`:
@@ -626,8 +655,8 @@ Two documented consequences of the nested `project()`:
   hooks also run for this nested call.
 - CMake requires a language to be enabled in the highest directory common to all
   targets using it, *including through link dependencies*. **A consumer linking
-  any C++ target of ours — `gamelib::imgui`, `gamelib::soloud`,
-  `gamelib::sokol_imgui` — must enable CXX in its own top-level project.** The
+  any C++ target of ours — `gamelib::imgui` or `gamelib::sokol_imgui` — must
+  enable CXX in its own top-level project.** The
   README states this.
 
 The root `CMakeLists.txt` prints a summary of enabled libraries, their pinned
@@ -703,7 +732,7 @@ is that the manifest, the `VERSION` files and the vendored trees agree — which
 | sokol | `4dc4532ee402b71c374100b1eb0a7ce7286f7896` |
 | imgui | `334f484892a1fa881d2a927c2aff222c15458b8f` |
 | stb | `2c980bb59875b0d32144a71867fbdebb2f77cd20` |
-| soloud | `e82fd32c1f62183922f08c14c814a02b58db1873` |
+| miniaudio | `9634bedb5b5a2ca38c1ee7108a9358a4e233f14d` |
 
 ## 8. Examples, CI, and acceptance criteria
 
@@ -716,7 +745,7 @@ build smoke test for its targets.
 | `clear` | `sokol_app` + `sokol_gfx` + `sokol_time` — window, clear colour |
 | `imgui` | + `sokol_imgui` + `imgui` — the ImGui demo window |
 | `beep` | `sokol_audio` — a generated tone |
-| `soloud` | `soloud` — an sfxr-generated sound, no asset file needed |
+| `audio` | `miniaudio` — decodes an embedded WAV through `ma_engine` |
 | `image` | `stb_image` + `sokol_gfx` — decode an embedded PNG to a texture |
 
 CI (GitHub Actions): ubuntu-latest, macos-latest, windows-latest, each building
@@ -732,7 +761,7 @@ display.
    succeeds on Linux, macOS and Windows; all five examples build.
 2. A scratch consumer that does `add_subdirectory(game-lib EXCLUDE_FROM_ALL)`
    and links **only** `gamelib::stb_image` builds *and runs*, and the build tree
-   contains **no** sokol, imgui or soloud object files. The consumer must
+   contains **no** sokol, imgui or miniaudio object files. The consumer must
    actually **call** the decoder (`stbi_load_from_memory` on an embedded PNG),
    not merely name the target: a link-only test would not have caught the
    missing `libm` dependency.
@@ -741,8 +770,8 @@ display.
    only `gamelib::sokol_gfx`. Configuring is part of the test — §3.2 forbids a
    configure-time check that fails when an unselected library's system
    dependencies are absent.
-4. `set(GAMELIB_SOLOUD OFF)` before `add_subdirectory` configures cleanly, and
-   `libs/soloud/CMakeLists.txt` never appears as a trace source location under
+4. `set(GAMELIB_MINIAUDIO OFF)` before `add_subdirectory` configures cleanly, and
+   `libs/miniaudio/CMakeLists.txt` never appears as a trace source location under
    `cmake --trace-expand --trace-redirect=<file>`. The configure summary alone
    cannot prove this — an implementation could enter the file and return early.
 5. `tools/vendor.py check` exits 0.
@@ -775,16 +804,25 @@ display.
 - sokol-shdc or any shader compilation pipeline.
 - Android, iOS, MinGW.
 - cimgui, sokol_gl.
-- `gamelib::stb_vorbis` — not merely deferred but **excluded on purpose**; see
-  §4.2 before reconsidering.
-- SoLoud's two SDL2 backends; see §3.2.
+- SoLoud, and with it sfxr, the speech synthesiser and the chiptune sound
+  sources; see §5.3, which also explains why it cannot simply be added back
+  alongside miniaudio.
 - Additional sokol utility headers — `sokol_debugtext`, `sokol_shape`,
   `sokol_color`, `sokol_fontstash`, `sokol_gfx_imgui`, `sokol_fetch`,
   `sokol_args`. Each is later a manifest line plus one
   `gamelib_add_header_library()` call; demonstrating that cheapness is part of
   the point of the structure.
 
-## 10. Review record
+## 10. Change and review record
+
+### Audio: SoLoud replaced by miniaudio (2026-09-08)
+
+Prompted by noticing that SoLoud's upstream had not moved since August 2024. The
+finding that settled it was that SoLoud's selected backend already vendored
+miniaudio, so the pack was shipping the same engine underneath an unmaintained
+wrapper. Full rationale, and what was given up, in §5.3.
+
+### Spec review
 
 This spec was reviewed on 2026-09-08 by OpenAI Codex (codex-cli 0.153.4) acting
 as an independent adversarial reviewer, with the current upstream headers
