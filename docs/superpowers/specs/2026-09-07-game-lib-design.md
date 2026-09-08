@@ -19,18 +19,30 @@ reserved and stays empty: if the pack later grows a thin app-shell layer (the
 sokol lifecycle, imgui wiring and frame pacing that every project retypes), that
 is where it goes, and it is a separate design.
 
-Four upstream projects:
+Eight upstream projects, plus one build tool:
 
-| project | licence | what we take |
-|---|---|---|
-| [sokol](https://github.com/floooh/sokol) | zlib | app, gfx, glue, log, time, audio, util/imgui |
-| [Dear ImGui](https://github.com/ocornut/imgui) | MIT | core (no backends — sokol_imgui is the backend) |
-| [miniaudio](https://github.com/mackron/miniaudio) | Unlicense *or* MIT-0 | `miniaudio.h` (one header) |
-| [stb](https://github.com/nothings/stb) | MIT / public domain | 8 headers + `stb_vorbis.c`, listed in §5.4 |
+| project | licence | language | what we take |
+|---|---|---|---|
+| [sokol](https://github.com/floooh/sokol) | zlib | C | app, gfx, glue, log, time, audio, util/imgui |
+| [Dear ImGui](https://github.com/ocornut/imgui) | MIT | C++11 | core (no backends — sokol_imgui is the backend) |
+| [miniaudio](https://github.com/mackron/miniaudio) | Unlicense *or* MIT-0 | C | `miniaudio.h` (one header) |
+| [stb](https://github.com/nothings/stb) | MIT / public domain | C | 8 headers + `stb_vorbis.c`, listed in §5.4 |
+| [Box2D](https://github.com/erincatto/box2d) | MIT | **C17** | `include/box2d/` + `src/` (v3, see §5.5) |
+| [EnTT](https://github.com/skypjack/entt) | MIT | **C++20** | `single_include/entt/entt.hpp` |
+| [HandmadeMath](https://github.com/HandmadeMath/HandmadeMath) | CC0 | C / C++ | `HandmadeMath.h` |
+| [itlib](https://github.com/iboB/itlib) | MIT | C++11 | `include/itlib/` (36 headers) |
+| [sokol-tools-bin](https://github.com/floooh/sokol-tools-bin) | MIT | *tool* | prebuilt `sokol-shdc` for 5 hosts (§6.2) |
+
+Five of the eight are pure C. The C++ ones are Dear ImGui (C++11), itlib (C++11)
+and EnTT, which requires **C++20** — the highest bar in the pack, and a reason
+it is a separate opt-in target rather than a default.
 
 Deliberately excluded: **cimgui** (needed only to call ImGui from C or to bind
 an FFI; our sokol_imgui bridge TU is C++, so plain Dear ImGui suffices),
-**sokol_gl**, and **SoLoud** (see §5.3 — miniaudio replaced it).
+**sokol_gl**, **SoLoud** (see §5.3 — miniaudio replaced it), **glad** (sokol_gfx
+carries its own GL loader on Windows and links GL directly elsewhere, so it is
+redundant for sokol use; and glad files are *generator output*, which makes
+pinning an upstream SHA meaningless), and **Abseil** (see §9).
 
 Platforms: Linux, macOS, Windows, Emscripten. Not Android, not iOS.
 
@@ -43,7 +55,9 @@ game-lib/
                               add_subdirectory(libs), examples, summary
   cmake/
     GameLibLibrary.cmake      gamelib_add_library(), gamelib_add_header_library(),
+                              gamelib_add_interface_library(),
                               gamelib_add_example()
+    GameLibShader.cmake       gamelib_add_shader()  (§6.2)
     single_header_impl.c.in   template for generated single-header impl TUs
   libs/
     CMakeLists.txt            option-gated add_subdirectory lines, nothing else
@@ -63,12 +77,29 @@ game-lib/
     stb/
       CMakeLists.txt  VERSION  LICENSE
       stb/                    VENDOR-OWNED: verbatim upstream headers
+    box2d/
+      CMakeLists.txt  VERSION  LICENSE
+      box2d/                  VENDOR-OWNED: upstream include/box2d/ at the top,
+                              upstream src/ beneath it
+    entt/
+      CMakeLists.txt  VERSION  LICENSE
+      entt/                   VENDOR-OWNED: entt.hpp (the amalgamated header)
+    handmademath/
+      CMakeLists.txt  VERSION  LICENSE
+      handmademath/           VENDOR-OWNED: HandmadeMath.h
+    itlib/
+      CMakeLists.txt  VERSION  LICENSE
+      itlib/                  VENDOR-OWNED: the 36 upstream headers
   examples/
     CMakeLists.txt
-    clear/  imgui/  beep/  audio/  image/
+    clear/  imgui/  beep/  audio/  image/  physics/  shader/
   tools/
     vendor.py
     vendor.toml               the single source of truth for pinning
+    sokol-shdc/
+      VERSION  LICENSE
+      bin/                    VENDOR-OWNED: linux, linux_arm64, osx,
+                              osx_arm64, win32 (~53 MB, see §6.2)
   docs/
   lib/                        reserved, empty (see §1)
   LICENSE                     game-lib's own (MIT)
@@ -92,8 +123,10 @@ buys three things:
    and re-copy, with no risk of leaving a deleted upstream file behind.
 
 **`libs/<name>/<name>/` is the only subtree `vendor.py` deletes and re-creates**,
-for every library without exception. `libs/<name>/src/` then means one thing
-everywhere in the repo: code we wrote. Without that rule the same path could be
+for every library without exception. The doubling exists to create the include
+prefix, so it does **not** apply to a vendored *tool*: `sokol-shdc` has no
+headers, and its vendor-owned subtree is simply `tools/sokol-shdc/bin/`.
+`libs/<name>/src/` then means one thing everywhere in the repo: code we wrote. Without that rule the same path could be
 vendor-owned for one library and hand-written for another, and a wrong path in
 `vendor.py`'s wipe step would silently delete our own impl TUs.
 
@@ -162,7 +195,8 @@ consumer that already vendors sokol itself. And CMake hard-errors on an unknown
   discovery must guard its own use. Criterion 3 depends on this.
 - Per-library options default `ON` and exist only so a consumer can stop a
   library's CMake being parsed at all:
-  `GAMELIB_SOKOL`, `GAMELIB_IMGUI`, `GAMELIB_MINIAUDIO`, `GAMELIB_STB`.
+  `GAMELIB_SOKOL`, `GAMELIB_IMGUI`, `GAMELIB_MINIAUDIO`, `GAMELIB_STB`,
+  `GAMELIB_BOX2D`, `GAMELIB_ENTT`, `GAMELIB_HANDMADEMATH`, `GAMELIB_ITLIB`.
 - **Declaration is dependency-aware.** A target is declared only if everything
   it needs was declared: `GAMELIB_IMGUI=OFF` means `gamelib_sokol_imgui` is not
   declared at all, and an example is declared only when every target it needs
@@ -234,7 +268,7 @@ readable on its own.
 Everything is expressed with `target_*` commands. Language requirements become
 `target_compile_features(gamelib_imgui PUBLIC cxx_std_11)`.
 
-This rule is testable; see §8, criterion 6.
+This rule is testable; see §8, criterion 7.
 
 ## 4. Target catalogue
 
@@ -257,6 +291,10 @@ This rule is testable; see §8, criterion 6.
 | `gamelib::stb_perlin` | generated TU | — | `m` |
 | `gamelib::stb_easy_font` | generated TU | — | `m` |
 | `gamelib::stb_vorbis` | `stb/stb_vorbis.c` directly | — | `m` |
+| `gamelib::box2d` | upstream `src/*.c` (C17) | — | `m` on Unix |
+| `gamelib::entt` | INTERFACE, header only (**C++20**) | — | none |
+| `gamelib::handmademath` | INTERFACE, header only | — | `m` on Unix |
+| `gamelib::itlib` | INTERFACE, headers only (C++11) | — | none |
 
 **Every target declares the libraries its own implementation needs**, not the
 libraries its typical companions happen to provide. `sokol_gfx.h` has a "Link
@@ -556,6 +594,94 @@ so it is not part of the generated-target list above. It is the pack's Ogg
 Vorbis decoder, which `gamelib::miniaudio` does not include; see §4.2 for the
 consumer-side include form.
 
+### 5.5 box2d
+
+**Version 3, not 2.** Box2D v3 is a complete rewrite in C — 1.6 MB of C against
+17 KB of C++ — with a clean `include/box2d/*.h` + `src/*.c` layout that drops
+into the pack's existing pattern. It is a different library from the 2.x C++ API
+in every respect that matters, so this is a fresh vendor, not a port of anything.
+
+- `libs/box2d/box2d/` ← upstream `include/box2d/*.h` at the top, upstream `src/`
+  beneath it, per §2.1. Consumers write `#include <box2d/box2d.h>`.
+- **C17 is required**, not C99: `target_compile_features(gamelib_box2d PUBLIC c_std_17)`.
+- **System links: `m` on Unix.** `math_functions.c` uses `sqrtf` and friends.
+  It needs **no threads**: v3's multithreading is entirely user-supplied through
+  `b2WorldDef`'s task callbacks, and `scheduler.c` includes nothing beyond
+  `<stdio.h>` and `<string.h>`. Do not add a pthread dependency by analogy with
+  the other libraries here.
+- **SIMD.** Upstream defaults to SSE2 on x86-64 and NEON on arm64, both baseline,
+  so nothing is passed. `BOX2D_AVX2` is *not* enabled: it would produce binaries
+  that fault on pre-AVX2 hardware, which is the wrong default for a library
+  shipped to unknown machines. On Emscripten upstream wants `-msimd128 -msse2`.
+  `GAMELIB_BOX2D_AVX2` exists for a consumer targeting known hardware.
+- **We write our own CMakeLists, and this is a case where that matters.**
+  Box2D's own root `CMakeLists.txt` does
+  `string(APPEND CMAKE_C_FLAGS " -pthread -s USE_PTHREADS=1")` under Emscripten
+  — a directory-scoped global mutation of exactly the kind §3.3 prohibits.
+  Vendoring only `include/` and `src/` and writing our own target avoids
+  inheriting it.
+
+### 5.6 entt
+
+Header-only. `libs/entt/entt/entt.hpp` ← upstream `single_include/entt/entt.hpp`,
+so a consumer writes `#include <entt/entt.hpp>`. An INTERFACE target, no TU.
+
+**EnTT v4 requires C++20** — upstream's own CMake says
+`target_compile_features(EnTT INTERFACE cxx_std_20)` and its README states it
+"supports at least C++20". Ours therefore carries
+`target_compile_features(gamelib_entt INTERFACE cxx_std_20)`.
+
+That is the highest language bar in the pack, and it is confined to this one
+target: nothing else here needs more than C++11. A consumer linking
+`gamelib::entt` is opting their whole target into C++20, which is worth saying
+plainly in the README rather than discovering through a compile error.
+
+Only the amalgamated header is vendored, not upstream's `src/` tree. It is what
+upstream ships for exactly this use, and it keeps the vendored subtree at one
+file.
+
+### 5.7 handmademath
+
+Header-only, public domain. `libs/handmademath/handmademath/HandmadeMath.h`;
+consumers write `#include <handmademath/HandmadeMath.h>`. An INTERFACE target.
+
+**No implementation define.** Unlike v1, HandmadeMath v2 declares everything
+`static inline`, so there is no `HANDMADE_MATH_IMPLEMENTATION` and no generated
+TU — it does not go through `gamelib_add_header_library()`.
+
+It includes `<math.h>` and calls `sqrtf`/`sinf`/`cosf` through `HMM_SQRTF` and
+friends, so the target links **`m` on Unix**. A consumer who defines those macros
+to their own routines does not need libm, but the target cannot know that, and
+over-declaring libm is the same deliberate trade made for stb in §5.4.
+
+Chosen over `linmath.h` (which nbolo used) because linmath's upstream stopped in
+2022 and HandmadeMath is maintained into 2026 with a fuller API. `cglm` was the
+other candidate — larger and more capable, but a multi-file build rather than one
+header.
+
+### 5.8 itlib
+
+Header-only. `libs/itlib/itlib/` ← upstream `include/itlib/` entire, 36 headers;
+consumers write `#include <itlib/span.hpp>`. An INTERFACE target.
+
+All 36 are vendored rather than a chosen subset. They are header-only, so an
+unused header costs a consumer nothing at all — no compilation, no code size —
+and choosing a subset would mean revisiting the choice every time someone wants
+one more.
+
+`target_compile_features(gamelib_itlib INTERFACE cxx_std_11)`: most headers are
+C++11, and the handful that need C++17 (`pmr_allocator.hpp`, and `sentry.hpp`
+optionally) are the consumer's problem to opt into, exactly as upstream
+documents per header. Declaring C++17 for all of them would impose the highest
+bar on every user of the cheapest header.
+
+**Why itlib is here at all.** It replaces the only two Abseil facilities nbolo
+actually used — `absl::Span` and `absl::InlinedVector` — with
+`itlib/span.hpp` and `itlib/small_vector.hpp`. Two headers against Abseil's 1514
+files. Note that `absl::Span` is simply `std::span` for a consumer already on
+C++20; itlib's value is for C++11/14/17 consumers and for `small_vector`, which
+has no standard equivalent at any level.
+
 ## 6. CMake helpers
 
 `cmake/GameLibLibrary.cmake` provides three functions. They handle only the
@@ -598,6 +724,20 @@ then calls `gamelib_add_library()`. This is what turns eight stb targets, plus
 `sokol_log` and `sokol_time`, into single-line list entries.
 
 ```cmake
+gamelib_add_interface_library(
+    NAME entt                      # -> gamelib_entt (INTERFACE) + gamelib::entt
+    [INCLUDE_ROOT <dir>]           # default: CMAKE_CURRENT_SOURCE_DIR
+    [FEATURES cxx_std_20]          # INTERFACE compile features
+    [LIBS <lib>...]                # INTERFACE link libraries
+)
+```
+
+For the header-only libraries that need no TU at all — `entt`, `handmademath`,
+`itlib`. Distinct from `gamelib_add_header_library()`, which *generates* a TU for
+a single-header library that has an implementation define (stb, sokol_log,
+sokol_time). HandmadeMath v2 has no such define, which is why it takes this path.
+
+```cmake
 gamelib_add_example(NAME clear SOURCES clear.c LIBS gamelib::sokol_app)
 ```
 
@@ -630,8 +770,8 @@ would force every consumer through C++ compiler detection, including one that
 selects only C libraries; `EXCLUDE_FROM_ALL` cannot suppress that. So game-lib
 declares C only, and calls `enable_language(CXX)` **from its own root
 CMakeLists, before `add_subdirectory(libs)` and `add_subdirectory(examples)`**,
-whenever any C++ library is enabled. There are only two: `imgui` and
-`sokol_imgui`. sokol, miniaudio and stb are all pure C.
+whenever any C++ library is enabled: `imgui`, `sokol_imgui`, `entt` or `itlib`.
+sokol, miniaudio, stb, Box2D and HandmadeMath are all usable from C.
 
 The placement is not free choice. CMake requires a language to be enabled in the
 highest directory common to every target using it, and game-lib's C++ *examples*
@@ -643,9 +783,9 @@ invalid.
 Note the consequence for a consumer who wants to avoid C++ compiler detection
 entirely: linking only C targets does **not** achieve it, because the C++
 library options default to `ON` and the decision is made at configure time. Such
-a consumer must set `GAMELIB_IMGUI=OFF` explicitly — that one option is now the
-whole of it, since imgui and its sokol bridge are the only C++ in the pack. The
-README says so.
+a consumer must set `GAMELIB_IMGUI=OFF`, `GAMELIB_ENTT=OFF` and
+`GAMELIB_ITLIB=OFF` explicitly. The README says so, and lists exactly those
+three.
 
 Two documented consequences of the nested `project()`:
 
@@ -655,13 +795,70 @@ Two documented consequences of the nested `project()`:
   hooks also run for this nested call.
 - CMake requires a language to be enabled in the highest directory common to all
   targets using it, *including through link dependencies*. **A consumer linking
-  any C++ target of ours — `gamelib::imgui` or `gamelib::sokol_imgui` — must
-  enable CXX in its own top-level project.** The
+  any C++ target of ours — `gamelib::imgui`, `gamelib::sokol_imgui`,
+  `gamelib::entt` or `gamelib::itlib` — must enable CXX in its own top-level
+  project.** The
   README states this.
 
 The root `CMakeLists.txt` prints a summary of enabled libraries, their pinned
 commits, the resolved backends, and every target it declined to declare with the
 reason (§3.2).
+
+### 6.2 Shader compilation
+
+`sokol_gfx` is close to unusable for real work without `sokol-shdc`: without it
+a consumer hand-writes `sg_shader_desc` structs and per-backend shader source
+blobs. (apple2tc's `blit.h` is shdc output, checked in because that project had
+no build-time integration.) So the pack ships both the compiler and a CMake
+function for it.
+
+#### The binaries are vendored
+
+`tools/sokol-shdc/bin/{linux,linux_arm64,osx,osx_arm64,win32}/`, from
+[sokol-tools-bin](https://github.com/floooh/sokol-tools-bin), pinned like every
+other dependency. **~53 MB**, and every update adds roughly that again to history
+permanently. That cost is accepted deliberately, in exchange for the pack's
+central property: a checkout builds, and now also compiles shaders, with no
+network and no external toolchain.
+
+The alternative of building `sokol-shdc` from source was examined and rejected.
+It needs **Deno 2.6** (its `fibs` build system is TypeScript) or a Zig toolchain
+— neither vendorable — plus 8 submodules including glslang (79 MB), SPIRV-Tools
+(31 MB) and SPIRV-Cross (18 MB). That is roughly three times the size of the
+binaries, still requires an external toolchain, and would make every consumer
+compile a shader cross-compiler.
+
+`GAMELIB_SOKOL_SHDC=<path>` overrides the vendored binary, for a consumer on a
+host the pack has no binary for, or one who has built their own.
+
+#### `gamelib_add_shader()`
+
+```cmake
+gamelib_add_shader(
+    TARGET  mygame                 # the generated header is added to this target
+    INPUT   shaders/blit.glsl
+    OUTPUT  blit.h                 # generated into CMAKE_CURRENT_BINARY_DIR
+    [SLANG  glsl410:hlsl5]         # default: derived from GAMELIB_SOKOL_BACKEND
+    [OPTIONS --reflection ...]
+)
+```
+
+Three deliberate differences from the equivalent in `nbolo`
+(`cmake/ShaderCompiler.cmake`), which is where this design came from:
+
+1. **It attaches the output to a named target** via `target_sources` and a
+   `PRIVATE` include directory for the output location, instead of declaring
+   `add_custom_target(... ALL)`. An `ALL` target would build regardless of what
+   the consumer selected, which contradicts §3.2, and a target name derived from
+   the output filename collides the moment two examples both produce `shader.h`.
+2. **`SLANG` defaults from the backend**, following upstream's own documented
+   mapping: `glcore`→`glsl410`, `gles3`→`glsl300es`, `metal`→`metal_macos`,
+   `d3d11`→`hlsl5`. With `GAMELIB_SOKOL_BACKEND=dummy` there is no valid shader
+   language, and calling this function is a configure error naming the reason.
+3. **Host, not target, selects the binary.** `CMAKE_HOST_SYSTEM_NAME` and
+   `CMAKE_HOST_SYSTEM_PROCESSOR` — the tool runs on the build machine even when
+   cross-compiling to Emscripten, which is the common case. An unsupported host
+   is a `FATAL_ERROR` naming `GAMELIB_SOKOL_SHDC`.
 
 ## 7. Vendoring and updates
 
@@ -727,12 +924,22 @@ the start of implementation and commit whatever SHAs that produces. What matters
 is that the manifest, the `VERSION` files and the vendored trees agree — which
 `check` enforces — not that any particular commit was chosen.
 
-| library | commit |
-|---|---|
-| sokol | `4dc4532ee402b71c374100b1eb0a7ce7286f7896` |
-| imgui | `334f484892a1fa881d2a927c2aff222c15458b8f` |
-| stb | `2c980bb59875b0d32144a71867fbdebb2f77cd20` |
-| miniaudio | `9634bedb5b5a2ca38c1ee7108a9358a4e233f14d` |
+| library | version | commit |
+|---|---|---|
+| sokol | HEAD | `4dc4532ee402b71c374100b1eb0a7ce7286f7896` |
+| imgui | HEAD | `334f484892a1fa881d2a927c2aff222c15458b8f` |
+| stb | HEAD | `2c980bb59875b0d32144a71867fbdebb2f77cd20` |
+| miniaudio | HEAD | `9634bedb5b5a2ca38c1ee7108a9358a4e233f14d` |
+| box2d | v3.1.1 | `8c661469c9507d3ad6fbd2fea3f1aa71669c2fe3` |
+| entt | v4.0.0 | `85c6bba014049b5de8fad49d25424df2f1f6a8c1` |
+| handmademath | v2.0.0 | `422bc588e9e8ae580f472f05e47c01a646acff38` |
+| itlib | HEAD | `8a6bade082fa15a9f48a8a849f17e3305cd1e5e3` |
+| sokol-shdc *(tool)* | HEAD | `11d0cf678105d614d675e6d9bd2aaf3eeff12f8c` |
+
+Four of these have upstream releases and are pinned to the **tag**, not to HEAD:
+Box2D, EnTT and HandmadeMath all publish versioned releases, and a released tag
+is a better default than whatever was on the branch that day. The rest have no
+release cadence and are pinned to a commit.
 
 ## 8. Examples, CI, and acceptance criteria
 
@@ -747,6 +954,13 @@ build smoke test for its targets.
 | `beep` | `sokol_audio` — a generated tone |
 | `audio` | `miniaudio` — decodes an embedded WAV through `ma_engine` |
 | `image` | `stb_image` + `sokol_gfx` — decode an embedded PNG to a texture |
+| `physics` | `box2d` + `sokol_app` — falling boxes, no shaders needed |
+| `shader` | `gamelib_add_shader()` end to end — compile a `.glsl` and draw with it |
+
+`entt`, `handmademath` and `itlib` get no example of their own: they are
+header-only libraries with no initialisation and no interaction with the rest of
+the pack, so an example would demonstrate upstream's API rather than anything
+about game-lib. They are covered by criterion 7 instead.
 
 CI (GitHub Actions): ubuntu-latest, macos-latest, windows-latest, each building
 everything; plus `vendor.py check`; plus a **headless job** in a container with
@@ -758,7 +972,7 @@ display.
 ### Acceptance criteria
 
 1. Top-level `cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build`
-   succeeds on Linux, macOS and Windows; all five examples build.
+   succeeds on Linux, macOS and Windows; all seven examples build.
 2. A scratch consumer that does `add_subdirectory(game-lib EXCLUDE_FROM_ALL)`
    and links **only** `gamelib::stb_image` builds *and runs*, and the build tree
    contains **no** sokol, imgui or miniaudio object files. The consumer must
@@ -775,7 +989,12 @@ display.
    `cmake --trace-expand --trace-redirect=<file>`. The configure summary alone
    cannot prove this — an implementation could enter the file and return early.
 5. `tools/vendor.py check` exits 0.
-6. The mechanical form of §3.3, in two parts, because a directory-scoped `set()`
+6. A compile-only consumer includes `<entt/entt.hpp>`, `<itlib/span.hpp>`,
+   `<itlib/small_vector.hpp>`, `<handmademath/HandmadeMath.h>` and
+   `<box2d/box2d.h>` in one TU each and links the matching targets. This is what
+   catches a wrong include prefix or a missing `cxx_std_20` on `gamelib::entt`,
+   neither of which any example would exercise.
+7. The mechanical form of §3.3, in two parts, because a directory-scoped `set()`
    is invisible to the parent and so cannot be detected by comparing the
    parent's variables:
    a. Under `--trace-expand --trace-redirect=<file>`, no prohibited command
@@ -807,6 +1026,30 @@ display.
 - SoLoud, and with it sfxr, the speech synthesiser and the chiptune sound
   sources; see §5.3, which also explains why it cannot simply be added back
   alongside miniaudio.
+- **glad.** `sokol_gfx` ships its own GL loader on Windows and links GL directly
+  on Linux and macOS, so a loader is redundant for sokol use and only matters
+  for calling GL directly. Its files are also *generator output* rather than
+  upstream source, which makes "vendored at a pinned upstream SHA" meaningless —
+  and a generated artifact needs regenerating, not updating.
+- **Abseil — documented, not acquired.** game-lib contains no code, so nothing
+  in it consumes Abseil; the pack would only be re-exporting a library that
+  already has first-class CMake, `find_package` support and packages in vcpkg,
+  conan and every distro. Against that near-zero value, the cost is real:
+  Abseil declares hundreds of `absl::*` targets (24 in `absl/strings/` alone),
+  which would violate §3.3's namespacing rule and hard-error on duplicate target
+  names for any consumer already bringing their own. The README instead shows
+  how to bring it and link it alongside:
+
+  ```cmake
+  find_package(absl CONFIG REQUIRED)
+  add_subdirectory(third_party/game-lib EXCLUDE_FROM_ALL)
+  target_link_libraries(mygame PRIVATE
+      gamelib::sokol_app gamelib::box2d
+      absl::span)              # theirs, not ours
+  ```
+
+  For the two facilities that prompted the question, `gamelib::itlib` covers
+  both in two headers; see §5.8.
 - Additional sokol utility headers — `sokol_debugtext`, `sokol_shape`,
   `sokol_color`, `sokol_fontstash`, `sokol_gfx_imgui`, `sokol_fetch`,
   `sokol_args`. Each is later a manifest line plus one
@@ -821,6 +1064,21 @@ Prompted by noticing that SoLoud's upstream had not moved since August 2024. The
 finding that settled it was that SoLoud's selected backend already vendored
 miniaudio, so the pack was shipping the same engine underneath an unmaintained
 wrapper. Full rationale, and what was given up, in §5.3.
+
+### Libraries added from nbolo (2026-09-08)
+
+Surveyed `~/work/nbolo` (branch `work`, 2024-05-26), which vendors six things
+this pack did not have. Added: **Box2D** (as v3, a different library from
+nbolo's 2.3 C++ copy), **EnTT** (v4.0.0, up from nbolo's v3.7.1 of 2021),
+**HandmadeMath** (replacing nbolo's `linmath.h`, whose upstream stopped in
+2022), **itlib**, and the **sokol-shdc** binaries with a `gamelib_add_shader()`
+function derived from nbolo's `cmake/ShaderCompiler.cmake`. Declined: **glad**
+and **Abseil**, both with reasons in §9.
+
+The evidence that settled Abseil is worth keeping: nbolo used exactly two of its
+facilities, `absl::Span` (7 uses) and `absl::InlinedVector` (4 uses). Checking
+what a dependency is actually used for, rather than what it offers, changed the
+answer from "vendor 1514 files" to "vendor two headers".
 
 ### Spec review
 
