@@ -39,15 +39,15 @@ Platforms: Linux, macOS, Windows, Emscripten. Not Android, not iOS.
 
 ```
 game-lib/
-  CMakeLists.txt              cmake_minimum_required + project (§6.1), option
-                              gates, add_subdirectory(libs), examples, summary
+  CMakeLists.txt              cmake_minimum_required + project + conditional
+                              enable_language(CXX) (§6.1), option gates,
+                              add_subdirectory(libs), examples, summary
   cmake/
     GameLibLibrary.cmake      gamelib_add_library(), gamelib_add_header_library(),
                               gamelib_add_example()
     single_header_impl.c.in   template for generated single-header impl TUs
   libs/
-    CMakeLists.txt            enable_language(CXX) on demand (§6.1), then
-                              option-gated add_subdirectory lines, nothing else
+    CMakeLists.txt            option-gated add_subdirectory lines, nothing else
     sokol/
       CMakeLists.txt
       VERSION                 generated; url + commit + date
