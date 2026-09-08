@@ -1,6 +1,8 @@
 # game-lib — design
 
 Date: 2026-09-07
+Revised: 2026-09-08, after an external review (OpenAI Codex) raised 14 findings,
+all of which were independently verified and acted on. See §10.
 Status: approved, ready for implementation planning
 
 Research inputs: [apple2tc.md](../../../apple2tc.md),
@@ -24,11 +26,12 @@ Four upstream projects:
 | [sokol](https://github.com/floooh/sokol) | zlib | app, gfx, glue, log, time, audio, util/imgui |
 | [Dear ImGui](https://github.com/ocornut/imgui) | MIT | core (no backends — sokol_imgui is the backend) |
 | [SoLoud](https://github.com/jarikomppa/soloud) | zlib | include/ + src/ (core, audiosource, filter, backend) |
-| [stb](https://github.com/nothings/stb) | MIT / public domain | 9 headers, listed in §5.4 |
+| [stb](https://github.com/nothings/stb) | MIT / public domain | 8 headers, listed in §5.4 |
 
 Deliberately excluded: **cimgui** (needed only to call ImGui from C or to bind
-an FFI; our sokol_imgui bridge TU is C++, so plain Dear ImGui suffices) and
-**sokol_gl**.
+an FFI; our sokol_imgui bridge TU is C++, so plain Dear ImGui suffices),
+**sokol_gl**, and **stb_vorbis** (which would collide destructively with
+SoLoud's modified copy — see §4.2).
 
 Platforms: Linux, macOS, Windows, Emscripten. Not Android, not iOS.
 
@@ -36,29 +39,32 @@ Platforms: Linux, macOS, Windows, Emscripten. Not Android, not iOS.
 
 ```
 game-lib/
-  CMakeLists.txt              option gates, add_subdirectory(libs), examples
+  CMakeLists.txt              cmake_minimum_required + project (§6.1), option
+                              gates, add_subdirectory(libs), examples, summary
   cmake/
     GameLibLibrary.cmake      gamelib_add_library(), gamelib_add_header_library(),
                               gamelib_add_example()
     single_header_impl.c.in   template for generated single-header impl TUs
   libs/
-    CMakeLists.txt            option-gated add_subdirectory lines, nothing else
+    CMakeLists.txt            enable_language(CXX) on demand (§6.1), then
+                              option-gated add_subdirectory lines, nothing else
     sokol/
       CMakeLists.txt
       VERSION                 generated; url + commit + date
       LICENSE                 upstream, verbatim
-      sokol/                  verbatim upstream headers
-      src/                    our impl TUs
+      sokol/                  VENDOR-OWNED: verbatim upstream headers
+      src/                    ours: the impl TUs
     imgui/
       CMakeLists.txt  VERSION  LICENSE
-      imgui/                  verbatim upstream (headers and .cpp together)
+      imgui/                  VENDOR-OWNED: upstream headers and .cpp together
     soloud/
       CMakeLists.txt  VERSION  LICENSE
-      soloud/                 upstream include/
-      src/                    upstream src/{core,audiosource,filter,backend}
+      soloud/                 VENDOR-OWNED: upstream include/ at the top,
+                              upstream src/{core,audiosource,filter,backend}
+                              beneath it
     stb/
       CMakeLists.txt  VERSION  LICENSE
-      stb/                    verbatim upstream headers
+      stb/                    VENDOR-OWNED: verbatim upstream headers
   examples/
     CMakeLists.txt
     clear/  imgui/  beep/  soloud/  image/
@@ -87,6 +93,14 @@ buys three things:
 3. **Wholesale replacement on update.** `vendor.py` can `rm -rf libs/sokol/sokol`
    and re-copy, with no risk of leaving a deleted upstream file behind.
 
+**`libs/<name>/<name>/` is the *only* directory `vendor.py` writes to**, for
+every library without exception — which is why SoLoud's upstream `src/` tree
+goes *inside* it (`libs/soloud/soloud/src/…`) rather than at
+`libs/soloud/src/`. `libs/<name>/src/` then means one thing everywhere in the
+repo: code we wrote. Without that rule the same path would be vendor-owned for
+SoLoud and hand-written for sokol, and a wrong path in `vendor.py`'s wipe step
+would silently delete our own impl TUs.
+
 This is the `include/<lib>/` refinement identified in
 [apple2tc.md §6](../../../apple2tc.md) — present in neither surveyed repo —
 without the file-relocation cost that made it awkward there.
@@ -100,8 +114,14 @@ directory, because its sources sit beside rather than inside that directory.
   These need `PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/soloud`. SoLoud's audiosource
   files also include its own bundled `"stb_vorbis.h"`, `"dr_wav.h"`,
   `"dr_mp3.h"`, `"dr_flac.h"`, which live beside them inside
-  `src/audiosource/wav/` — quote-relative, and **private**, so SoLoud's bundled
-  stb_vorbis never collides with `gamelib::stb_vorbis`.
+  `src/audiosource/wav/` and so resolve quote-relative.
+
+  **A PRIVATE include directory hides a header path; it does not isolate a
+  linker symbol.** SoLoud's bundled decoders export ordinary global symbols, so
+  keeping their headers private does *not* make it safe to ship a second copy of
+  the same library elsewhere in the pack. That is why there is no
+  `gamelib::stb_vorbis` (§4.2), and the same caution applies to any future
+  target that would duplicate `dr_wav`, `dr_mp3` or `dr_flac`.
 
 ## 3. The consumer contract
 
@@ -128,39 +148,92 @@ consumer that already vendors sokol itself. And CMake hard-errors on an unknown
 
 ### 3.2 Selection: link-driven, with options as an escape hatch
 
-- `EXCLUDE_FROM_ALL` on the `add_subdirectory` means **nothing compiles unless
-  linked**. SoLoud sitting in the tree costs a consumer who never links it zero
-  build time. Choosing a library *is* naming it in `target_link_libraries`.
+- `EXCLUDE_FROM_ALL` on the `add_subdirectory` keeps game-lib's targets out of
+  **the consumer's default build target**. That is the whole of the promise. It
+  is *not* "nothing compiles unless linked": an explicitly requested target
+  (`cmake --build . --target gamelib_soloud`) still builds, an inter-target
+  dependency still builds, and the subdirectory is still **processed at
+  configure time** regardless. In practice a consumer who never links SoLoud
+  never compiles it, but the guarantee is the narrow one.
+- Because configure-time processing always happens, **no library's CMakeLists
+  may perform a configure-time check that fails when its own system
+  dependencies are absent.** Specifically: no `find_package(... REQUIRED)` for
+  anything a consumer might not have selected, and no unconditional use of a
+  `<Pkg>_LIBRARIES` value that may be `<Pkg>-NOTFOUND` — a NOTFOUND value baked
+  into an unused target's link interface still fails generation. Optional
+  discovery must guard its own use. Criterion 3 depends on this.
 - Per-library options default `ON` and exist only so a consumer can stop a
   library's CMake being parsed at all:
   `GAMELIB_SOKOL`, `GAMELIB_IMGUI`, `GAMELIB_SOLOUD`, `GAMELIB_STB`.
+- **Declaration is dependency-aware.** A target is declared only if everything
+  it needs was declared: `GAMELIB_IMGUI=OFF` means `gamelib_sokol_imgui` is not
+  declared at all, and an example is declared only when every target it needs
+  exists. game-lib prints a `message(STATUS)` naming each target it did not
+  declare and why. There is no separate "request this target anyway" mechanism:
+  a consumer that links an undeclared target gets CMake's own missing-target
+  error at generation time, and the STATUS lines are what make that error easy
+  to diagnose.
 - Configuration options, where a library genuinely has a choice:
   - `GAMELIB_SOKOL_BACKEND` = `auto` (default) | `glcore` | `gles3` | `metal` |
     `d3d11` | `dummy`. `auto` resolves to metal on macOS, d3d11 on Windows,
-    glcore on Linux, gles3 on Emscripten. `dummy` selects
-    `SOKOL_DUMMY_BACKEND`, which is what makes a headless/CI build possible.
+    glcore on Linux, gles3 on Emscripten.
   - `GAMELIB_SOLOUD_BACKEND` = `miniaudio` (default) | `alsa` | `coreaudio` |
-    `wasapi` | `sdl2` | `null` | `nosound`. miniaudio is the default because it
-    is the only backend that works on all three desktop platforms with no
-    system development package installed.
+    `wasapi` | `null` | `nosound`. miniaudio is the default because it is the
+    only backend that works on all three desktop platforms with no system
+    development package installed. SoLoud's two SDL2 integrations are
+    deliberately not offered: `WITH_SDL2` needs a second source file
+    (`soloud_sdl2_dll.c`) for dynamic loading while `WITH_SDL2_STATIC` links
+    directly, and miniaudio already covers every supported platform.
 
-### 3.3 The hard rule: a submodule never mutates global state
+#### Supported backend x platform
 
-Prohibited anywhere in this repo:
+| backend | Linux | macOS | Windows | Emscripten | declares `sokol_app`? |
+|---|---|---|---|---|---|
+| `glcore` | yes (GLX) | yes | yes | — | yes |
+| `gles3` | — | — | — | yes | yes |
+| `metal` | — | yes | — | — | yes |
+| `d3d11` | — | — | yes | — | yes |
+| `dummy` | yes | yes | yes | yes | **no** |
 
-- `include_directories()`, `add_definitions()`, `link_libraries()`
-- setting `CMAKE_CXX_STANDARD`, `CMAKE_C_STANDARD`, `CMAKE_*_FLAGS`
-- setting `CMAKE_EXECUTABLE_SUFFIX`
+`dummy` is a **gfx-only** backend. `sokol_app.h` rejects it outright — its
+platform blocks `#error` unless one of `SOKOL_METAL` / `SOKOL_GLCORE` /
+`SOKOL_D3D11` / `SOKOL_GLES3` / `SOKOL_WGPU` / `SOKOL_NOAPI` is defined. So with
+`GAMELIB_SOKOL_BACKEND=dummy`, `gamelib_sokol_app`, `gamelib_sokol_imgui` and
+every windowed example are **not declared**. That is the configuration
+criterion 3 exercises.
 
-The last one is not hypothetical: `imgui-react-runtime`'s sokol CMakeLists does
-`set(CMAKE_EXECUTABLE_SUFFIX ".html")` under Emscripten. Inside a submodule that
-would silently rename *the consumer's* binaries.
+### 3.3 The rule: game-lib adds, it never changes
+
+Stated precisely, because the loose version ("never mutates global state") is
+both false and impossible — `project()`, cache options and package discovery are
+all deliberate parts of this design.
+
+**game-lib may:** declare targets, all of them namespaced `gamelib_*` /
+`gamelib::*`; create cache entries whose names begin with `GAMELIB_`; call
+`project()` and `enable_language()`; and cause CMake's own discovery modules to
+create their standard cache entries.
+
+**game-lib may not:** change the value of any cache entry that existed before
+`add_subdirectory`; write to the parent scope (`set(... PARENT_SCOPE)`); or
+declare a target whose name is not namespaced.
+
+**Prohibited commands anywhere in this repo**, as hygiene rather than because
+they reach the consumer: `include_directories()`, `add_definitions()`,
+`link_libraries()`, and `set()` of `CMAKE_CXX_STANDARD`, `CMAKE_C_STANDARD`,
+`CMAKE_*_FLAGS` or `CMAKE_EXECUTABLE_SUFFIX`.
+
+Note carefully what these *do* and do not do. An ordinary `set()` is scoped to
+the current directory and its descendants; only `PARENT_SCOPE` reaches upward.
+So `imgui-react-runtime`'s `set(CMAKE_EXECUTABLE_SUFFIX ".html")` in
+`external/sokol/CMakeLists.txt` does **not** rename a consumer's binaries, and
+does not even reach its own sibling `examples/`. The reason to ban these
+commands here is narrower: inside game-lib they still affect that library's
+directory and everything beneath it, which makes one library's CMakeLists able
+to silently change how its own subdirectories build. Each library must be
+readable on its own.
 
 Everything is expressed with `target_*` commands. Language requirements become
-`target_compile_features(gamelib_imgui PUBLIC cxx_std_11)`. Emscripten's WebGL2
-requirement becomes
-`target_link_options(gamelib_sokol_app INTERFACE -sUSE_WEBGL2=1)`, so a consumer
-inherits the flag by linking rather than by reading documentation.
+`target_compile_features(gamelib_imgui PUBLIC cxx_std_11)`.
 
 This rule is testable; see §8, criterion 6.
 
@@ -168,23 +241,30 @@ This rule is testable; see §8, criterion 6.
 
 | target | sources | depends on | system links |
 |---|---|---|---|
-| `gamelib::sokol_gfx` | `src/sokol_gfx.c` | — | none (backend define only) |
-| `gamelib::sokol_app` | `src/sokol_app.c` (app + glue) | `sokol_gfx` | see §5.1 |
-| `gamelib::sokol_log` | generated TU | — | none |
-| `gamelib::sokol_time` | generated TU | — | none |
-| `gamelib::sokol_audio` | `src/sokol_audio.c` | — | Linux `asound`; macOS `AudioToolbox`; Windows/MSVC none |
+| `gamelib::sokol_gfx` | `src/sokol_gfx.c` | — | **its own backend libs** — see §5.1 |
+| `gamelib::sokol_app` | `src/sokol_app.c` (app + glue) | `sokol_gfx` | *additional* windowing libs — see §5.1 |
+| `gamelib::sokol_log` | generated TU (`SOKOL_LOG_IMPL`) | — | none |
+| `gamelib::sokol_time` | generated TU (`SOKOL_TIME_IMPL`) | — | none |
+| `gamelib::sokol_audio` | `src/sokol_audio.c` | — | Linux `asound` + `-pthread`; macOS `AudioToolbox`; Windows/MSVC none |
 | `gamelib::sokol_imgui` | `src/sokol_imgui.cc` (**C++**) | `sokol_app`, `sokol_gfx`, `imgui` | none |
 | `gamelib::imgui` | 5 upstream `.cpp` | — | none |
-| `gamelib::soloud` | upstream core/audiosource/filter + 1 backend | — | per backend; miniaudio needs none |
-| `gamelib::stb_image` | generated TU | — | none |
-| `gamelib::stb_image_write` | generated TU | — | none |
-| `gamelib::stb_truetype` | generated TU | — | none |
-| `gamelib::stb_rect_pack` | generated TU | — | none |
-| `gamelib::stb_ds` | generated TU | — | none |
-| `gamelib::stb_sprintf` | generated TU | — | none |
-| `gamelib::stb_perlin` | generated TU | — | none |
-| `gamelib::stb_easy_font` | generated TU | — | none |
-| `gamelib::stb_vorbis` | `stb/stb_vorbis.c` directly | — | none |
+| `gamelib::soloud` | upstream core/audiosource/filter + 1 backend | — | per backend — see §5.3 |
+| `gamelib::stb_image` | generated TU | — | `m` (§5.4) |
+| `gamelib::stb_image_write` | generated TU | — | `m` |
+| `gamelib::stb_truetype` | generated TU | — | `m` |
+| `gamelib::stb_rect_pack` | generated TU | — | `m` |
+| `gamelib::stb_ds` | generated TU | — | `m` |
+| `gamelib::stb_sprintf` | generated TU | — | `m` |
+| `gamelib::stb_perlin` | generated TU | — | `m` |
+| `gamelib::stb_easy_font` | generated TU | — | `m` |
+
+**Every target declares the libraries its own implementation needs**, not the
+libraries its typical companions happen to provide. `sokol_gfx.h` has a "Link
+with the following system libraries" section of its own, prefaced "note that
+sokol_app.h has *additional* linker requirements" — so gfx carries the backend
+libraries and app carries only the windowing ones on top. Getting this wrong is
+invisible in a full app build and fatal for the single-target consumer the pack
+exists to serve.
 
 ### 4.1 Why sokol is split this finely
 
@@ -203,19 +283,30 @@ in `sokol_app`. `stm_now()` is what every frame loop needs for timing, windowed
 or not; making it reachable only by linking a windowing library would defeat the
 split above. Each is a generated two-line TU with no dependencies.
 
-### 4.2 Why nine stb targets
+### 4.2 Why eight separate stb targets
 
-Each stb header compiles to its own TU, and each gets its own target, so a
-consumer that wants `stb_image` does not compile `stb_truetype` and
-`stb_vorbis`. Eight of the nine are *generated by a loop* over the list in
-§5.4 — eight targets from eight list entries, not eight hand-written CMake
-blocks. `stb_vorbis` is the exception: upstream ships it as a `.c`, so it is
-compiled directly.
+Each stb header compiles to its own TU and gets its own target, so a consumer
+that wants `stb_image` does not compile `stb_truetype`. All eight are *generated
+by a loop* over the list in §5.4 — eight targets from eight list entries, not
+eight hand-written CMake blocks.
 
 The alternative considered and rejected: one `gamelib::stb` static archive
-containing nine objects, relying on the linker to pull only referenced members.
-That yields the same binary, but still *compiles* all nine whenever any is
+containing eight objects, relying on the linker to pull only referenced members.
+That yields the same binary, but still *compiles* all eight whenever any is
 linked.
+
+**`stb_vorbis` is deliberately absent, and must stay absent.** SoLoud vendors
+its own copy of `stb_vorbis.c` and compiles it into its archive with ordinary
+global symbols. That copy is not a duplicate — it is *semantically modified*: it
+includes `soloud_file_hack_on.h`, which `#define`s `FILE` to
+`Soloud_Filehack` along with `fread`, `fseek`, `ftell` and friends, and SoLoud
+passes its own file objects to `stb_vorbis_open_file()`. So SoLoud's
+`stb_vorbis_open_file` and upstream's share a C symbol name but take different
+pointer types. Shipping a `gamelib::stb_vorbis` alongside `gamelib::soloud`
+risks not a duplicate-symbol *error* but a linker silently resolving SoLoud's
+call to the upstream decoder, which would then dereference a `Soloud_Filehack*`
+as a `FILE*`. PRIVATE include directories do not help: they isolate header
+paths, not linker symbols. Consumers needing Ogg decoding use SoLoud.
 
 ### 4.3 sokol_imgui is C++
 
@@ -282,30 +373,73 @@ which `PUBLIC` guarantees.
 imgui-react-runtime both pass — no longer exist. Neither repo's sokol CMakeLists
 can be copied verbatim.
 
-System libraries, from `sokol_app.h`'s own "Link with the following system
+#### System libraries
+
+Split between the two targets exactly as the two headers document their own
+requirements. `sokol_gfx.h` carries the **rendering backend**; `sokol_app.h`
+adds the **windowing** libraries on top.
+
+`gamelib_sokol_gfx` — from `sokol_gfx.h`'s "Link with the following system
 libraries" section:
 
-- **Linux**, all backends: `X11 Xi Xcursor dl m`; with glcore add `GL`, with
-  gles3 add `GLESv2`. Also requires `-pthread` as **both** a compile and a link
-  option (upstream issue #376) — use
-  `set(THREADS_PREFER_PTHREAD_FLAG ON)` + `find_package(Threads REQUIRED)` +
-  `Threads::Threads`, which supplies both.
-- **macOS**, all backends: `AppKit`, `QuartzCore`; with metal add `Metal`, with
-  glcore add `OpenGL`. (Note `AppKit`, not the older `Cocoa` both surveyed repos
-  use.) `sokol_app.h` states the implementation **must be compiled as
-  Objective-C** on macOS. Rule: on Apple, compile **every** sokol impl TU as
-  Objective-C — `-x objective-c` for the `.c` TUs and `-x objective-c++` for
-  `sokol_imgui.cc` — via `target_compile_options(... PRIVATE ...)`, rather than
-  maintaining duplicate `.m` files as apple2tc does. Applied uniformly on
-  purpose: Objective-C is a superset of C, so it is harmless for a TU that does
-  not need it, and a per-file rule would silently break the day a backend change
-  makes another TU touch a platform API.
-- **Windows** with MSVC or Clang: nothing — dependencies are declared in-source
-  via `#pragma comment`. MinGW is out of scope for the initial version.
-- **Emscripten**: `target_link_options(... INTERFACE -sUSE_WEBGL2=1)`.
+| platform / backend | links |
+|---|---|
+| macOS + metal | `Metal` |
+| macOS + glcore | `OpenGL` |
+| Linux + glcore (GLX) | `GL` |
+| Linux + gles3 (EGL) | `GLESv2`, `EGL` |
+| Windows + d3d11, MSVC/Clang | nothing (`#pragma comment`) |
+| Windows + glcore | nothing (sokol_gfx ships its own GL loader on Windows) |
+| Emscripten | `target_link_options(... INTERFACE -sUSE_WEBGL2=1)` |
+| `dummy`, any platform | nothing |
 
-`sokol_audio.h` links: Linux `asound`, macOS `AudioToolbox`, Windows/MSVC
-nothing.
+`gamelib_sokol_app` — the *additional* requirements from `sokol_app.h`:
+
+| platform | links |
+|---|---|
+| Linux, all backends | `X11 Xi Xcursor dl m` + the `-pthread` flag |
+| macOS, all backends | `AppKit`, `QuartzCore` |
+| Windows, MSVC/Clang | nothing (`#pragma comment`) |
+
+Two subtleties in that table:
+
+- **GLX versus EGL on Linux.** `sokol_app.h` says "GLX is default, set
+  SOKOL_FORCE_EGL to override", and its Linux GLES3 path selects EGL
+  unconditionally. game-lib never sets `SOKOL_FORCE_EGL`, so glcore means GLX
+  (`GL` alone) and gles3 means EGL (`GLESv2` **and** `EGL`).
+- **The `-pthread` flag must be literal.** Do *not* rely on
+  `THREADS_PREFER_PTHREAD_FLAG` + `Threads::Threads`: FindThreads documents that
+  the preference "has no effect if the system libraries provide the thread
+  functions", and it checks libc *before* checking the flag. On glibc 2.34+
+  pthread lives in libc, so `Threads::Threads` would carry no flag at all, while
+  upstream issue #376 requires it as both a compile and a link option. Use
+  `target_compile_options(<t> PUBLIC $<$<PLATFORM_ID:Linux>:-pthread>)` and the
+  matching `target_link_options`.
+
+`sokol_audio.h` (`gamelib_sokol_audio`): Linux `asound` **plus the `-pthread`
+flag** — its ALSA backend calls `pthread_create()` and `pthread_join()`
+directly; macOS `AudioToolbox`; Windows/MSVC nothing.
+
+#### Objective-C on Apple
+
+`sokol_app.h` states the implementation **must be compiled as Objective-C** on
+macOS. Rule: on Apple, compile **every** sokol impl TU as Objective-C —
+`-x objective-c` for the `.c` TUs and `-x objective-c++` for `sokol_imgui.cc` —
+via `target_compile_options(... PRIVATE ...)`, rather than maintaining duplicate
+`.m` files as apple2tc does. Applied uniformly on purpose: Objective-C is a
+superset of C, so it is harmless for a TU that does not need it, and a per-file
+rule would silently break the day a backend change makes another TU touch a
+platform API.
+
+(Note `AppKit`, not the older `Cocoa` both surveyed repos use. MinGW is out of
+scope for the initial version.)
+
+#### Consumer-visible include ordering
+
+`sokol_glue.h` `#error`s with "Please include sokol_gfx.h before sokol_glue.h"
+at the *declaration* level, and demands `sokol_app.h` before its
+*implementation*. A consumer including `<sokol/sokol_glue.h>` must therefore
+include `<sokol/sokol_gfx.h>` first. The README must say so.
 
 ### 5.2 imgui
 
@@ -338,7 +472,16 @@ so there is no collision even when both are linked.
   therefore needs no re-vendor.
 - The selected backend's define is `PRIVATE` (it affects only SoLoud's own
   compilation) and its source file is added conditionally.
+- SoLoud's two SDL2 integrations are not offered, per §3.2.
 - `PRIVATE` include dir `${CMAKE_CURRENT_SOURCE_DIR}/soloud`, per §2.1.
+- **System links.** "miniaudio needs no development packages" is not the same as
+  "needs no libraries": miniaudio's own documentation states the Linux build
+  "requires linking to `-ldl`, `-lpthread` and `-lm`". So with the default
+  backend, `gamelib_soloud` links `dl m` and the `-pthread` flag on Linux, and
+  nothing on macOS or Windows. `alsa` adds `asound`; `coreaudio` adds
+  `AudioToolbox`; `wasapi` needs nothing on MSVC.
+- SoLoud's bundled `stb_vorbis.c` stays in its build. See §4.2 for why the pack
+  must not also ship a standalone `gamelib::stb_vorbis`.
 
 ### 5.4 stb
 
@@ -355,12 +498,16 @@ Vendored into `libs/stb/stb/`, and the list that drives the generated targets:
 | `stb_perlin.h` | `STB_PERLIN_IMPLEMENTATION` |
 | `stb_easy_font.h` | `STB_EASY_FONT_IMPLEMENTATION` |
 
-`stb_vorbis` is the exception: upstream ships it as `stb_vorbis.c`, not a
-header. It is vendored as-is and compiled directly as the target's source. A
-consumer includes it upstream-style:
-`#define STB_VORBIS_HEADER_ONLY` then `#include <stb/stb_vorbis.c>`. The README
-must say so, because it is the one target whose usage is not
-`#include <stb/x.h>`.
+Every one of these targets links `m` on Linux, macOS and Emscripten, and nothing
+extra on Windows. `stb_image` alone would justify it — it calls `pow()` and
+`ldexp()` in its default configuration — and applying the rule uniformly rather
+than auditing each header per release is the deliberate trade. It overstates the
+dependency for a header that needs no math functions; it hides no correctness
+distinction. The rule is scoped to the four supported platforms and must be
+revisited if a fifth is added.
+
+`stb_vorbis.c` is **not** vendored and there is no `gamelib::stb_vorbis`; see
+§4.2.
 
 ## 6. CMake helpers
 
@@ -374,6 +521,7 @@ gamelib_add_library(
     SOURCES src/sokol_app.c
     [INCLUDE_ROOT <dir>]           # default: CMAKE_CURRENT_SOURCE_DIR
     [PRIVATE_INCLUDES <dir>...]
+    [LIBS <lib>...]                # PUBLIC link libraries, genex allowed
 )
 ```
 
@@ -388,6 +536,7 @@ gamelib_add_header_library(
     HEADER      stb/stb_image.h
     IMPL_DEFINE STB_IMAGE_IMPLEMENTATION
     [LANGUAGE   C]                 # default C
+    [LIBS <lib>...]                # forwarded to gamelib_add_library
 )
 ```
 
@@ -409,8 +558,47 @@ Config and platform variation uses generator expressions
 (`$<PLATFORM_ID:Linux>`, `$<CONFIG:Debug>`) rather than `if()` blocks, following
 imgui-react-runtime's `imgui-runtime` target.
 
+### 6.1 The root preamble
+
+```cmake
+cmake_minimum_required(VERSION 3.21)
+project(game-lib LANGUAGES C)
+```
+
+Both lines are load-bearing:
+
+- **3.21** is the floor for `PROJECT_IS_TOP_LEVEL` (§8). It also carries
+  **CMP0077 NEW**, without which §3.2's `set(GAMELIB_SOLOUD OFF)` before
+  `add_subdirectory` silently does nothing: `option()` under the OLD behaviour
+  deletes the parent's normal variable and creates a cache entry set to `ON`.
+  `target_link_options` separately needs 3.13.
+- **An explicit `project()` call** is required, not optional.
+  `PROJECT_IS_TOP_LEVEL` is set by `project()` and otherwise *inherited from the
+  parent scope* — so without this line, a consumer whose own project is
+  top-level would see `PROJECT_IS_TOP_LEVEL` true inside game-lib and build all
+  of game-lib's examples.
+
+**`LANGUAGES C`, with CXX enabled on demand.** `project(... LANGUAGES C CXX)`
+would force every consumer through C++ compiler detection, including one that
+selects only C libraries; `EXCLUDE_FROM_ALL` cannot suppress that. So game-lib
+declares C only and calls `enable_language(CXX)` from `libs/CMakeLists.txt`
+when any C++ library (`imgui`, `soloud`, `sokol_imgui`) is enabled.
+
+Two documented consequences of the nested `project()`:
+
+- Local `PROJECT_*` variables become game-lib's; top-level identity variables
+  such as `CMAKE_PROJECT_NAME` stay the parent's, which is the documented
+  behaviour. A parent's `CMAKE_PROJECT_INCLUDE` / `CMAKE_PROJECT_INCLUDE_BEFORE`
+  hooks also run for this nested call.
+- CMake requires a language to be enabled in the highest directory common to all
+  targets using it, *including through link dependencies*. **A consumer linking
+  any C++ target of ours — `gamelib::imgui`, `gamelib::soloud`,
+  `gamelib::sokol_imgui` — must enable CXX in its own top-level project.** The
+  README states this.
+
 The root `CMakeLists.txt` prints a summary of enabled libraries, their pinned
-commits, and the resolved backends.
+commits, the resolved backends, and every target it declined to declare with the
+reason (§3.2).
 
 ## 7. Vendoring and updates
 
@@ -440,9 +628,15 @@ manifest line plus a re-vendor.
 third-party dependencies):
 
 - `list` — pinned versions at a glance
-- `update <lib> [--commit SHA]` — shallow-clone to a temp dir, **wipe** the
-  destination directories, re-copy the mapped paths, rewrite `VERSION`, print a
-  diffstat
+- `update <lib> [--commit SHA]` — fetch into a temp dir, **wipe** the destination
+  directories, re-copy the mapped paths, then rewrite **both `vendor.toml` and
+  `VERSION`**, and print a diffstat. Writing the manifest is not optional: it is
+  the authoritative pin, so an `update --commit` that changed only `VERSION`
+  would leave `check` failing immediately.
+  Fetch method, since a pinned commit is usually not branch HEAD:
+  `git init` + `git remote add` + `git fetch --depth 1 origin <sha>` +
+  `git checkout FETCH_HEAD`, falling back to a full clone when the server
+  refuses to serve an arbitrary SHA.
 - `check` — assert every `libs/*/VERSION` matches the manifest; run in CI
 
 `libs/<name>/VERSION` is generated and marked as such in its own text. It is
@@ -485,16 +679,33 @@ display.
 1. Top-level `cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build`
    succeeds on Linux, macOS and Windows; all five examples build.
 2. A scratch consumer that does `add_subdirectory(game-lib EXCLUDE_FROM_ALL)`
-   and links **only** `gamelib::stb_image` builds, and the build tree contains
-   **no** sokol, imgui or soloud object files.
-3. The headless CI job of §8 builds and links with no X11 present.
-4. `set(GAMELIB_SOLOUD OFF)` before `add_subdirectory` configures cleanly and
-   `libs/soloud/CMakeLists.txt` is never parsed (observable in the summary).
+   and links **only** `gamelib::stb_image` builds *and runs*, and the build tree
+   contains **no** sokol, imgui or soloud object files. The consumer must
+   actually **call** the decoder (`stbi_load_from_memory` on an embedded PNG),
+   not merely name the target: a link-only test would not have caught the
+   missing `libm` dependency.
+3. The headless CI job of §8 configures, builds and links with no X11
+   development packages present, using `GAMELIB_SOKOL_BACKEND=dummy` and linking
+   only `gamelib::sokol_gfx`. Configuring is part of the test — §3.2 forbids a
+   configure-time check that fails when an unselected library's system
+   dependencies are absent.
+4. `set(GAMELIB_SOLOUD OFF)` before `add_subdirectory` configures cleanly, and
+   `libs/soloud/CMakeLists.txt` never appears as a trace source location under
+   `cmake --trace-expand --trace-redirect=<file>`. The configure summary alone
+   cannot prove this — an implementation could enter the file and return early.
 5. `tools/vendor.py check` exits 0.
-6. A test consumer captures `CMAKE_CXX_STANDARD`, `CMAKE_C_STANDARD`,
-   `CMAKE_EXECUTABLE_SUFFIX` and `get_directory_property(... INCLUDE_DIRECTORIES)`
-   immediately before and after `add_subdirectory(game-lib)` and
-   `message(FATAL_ERROR)`s on any difference — the mechanical form of §3.3.
+6. The mechanical form of §3.3, in two parts, because a directory-scoped `set()`
+   is invisible to the parent and so cannot be detected by comparing the
+   parent's variables:
+   a. Under `--trace-expand --trace-redirect=<file>`, no prohibited command
+      (`include_directories`, `add_definitions`, `link_libraries`, or `set` of
+      `CMAKE_*_FLAGS` / `CMAKE_*_STANDARD` / `CMAKE_EXECUTABLE_SUFFIX`) appears
+      with a game-lib-owned source location.
+   b. No cache entry that existed before `add_subdirectory(game-lib)` has
+      changed value, and every newly created entry either begins with `GAMELIB_`
+      or was created by one of CMake's own discovery modules. Asserting the
+      whole cache is unchanged would be wrong — §6.1's `project()` and §3.2's
+      options both legitimately add entries.
 
 ## 9. Explicitly out of scope
 
@@ -505,8 +716,37 @@ display.
 - sokol-shdc or any shader compilation pipeline.
 - Android, iOS, MinGW.
 - cimgui, sokol_gl.
+- `gamelib::stb_vorbis` — not merely deferred but **excluded on purpose**; see
+  §4.2 before reconsidering.
+- SoLoud's two SDL2 backends; see §3.2.
 - Additional sokol utility headers — `sokol_debugtext`, `sokol_shape`,
   `sokol_color`, `sokol_fontstash`, `sokol_gfx_imgui`, `sokol_fetch`,
   `sokol_args`. Each is later a manifest line plus one
   `gamelib_add_header_library()` call; demonstrating that cheapness is part of
   the point of the structure.
+
+## 10. Review record
+
+This spec was reviewed on 2026-09-08 by OpenAI Codex (codex-cli 0.153.4) acting
+as an independent adversarial reviewer, with the current upstream headers
+supplied as reference material. It returned 14 findings and the verdict "not
+ready for implementation". Every finding was independently verified against the
+sources before being acted on; none was contested. Twelve resolutions were
+accepted on the first pass, two (§3.3's rule statement and §3.2's option
+semantics) were returned as insufficient and revised.
+
+Three of the findings corrected outright errors of fact in the first draft, and
+are recorded here because each is the kind of mistake that would otherwise be
+made again:
+
+1. **Targets did not declare their own link dependencies.** `sokol_gfx`,
+   `stb_image`, `sokol_audio` and `soloud` were each credited with fewer system
+   libraries than their own upstream documentation requires — invisible in a
+   full application build, fatal for the single-target consumer this pack exists
+   to serve. Fixed in §4, §5.1, §5.3, §5.4.
+2. **PRIVATE include directories were claimed to prevent a symbol collision.**
+   They do not. This is what removed `gamelib::stb_vorbis` (§4.2).
+3. **A directory-scoped `set()` was claimed to reach the parent project.** It
+   does not; only `PARENT_SCOPE` does. §3.3's rule survived but its
+   justification and its test (§8, criterion 6) were both wrong and were
+   rewritten.
