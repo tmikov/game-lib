@@ -661,8 +661,20 @@ manifest line plus a re-vendor.
 `tools/vendor.py` (Python 3.11+, `tomllib` from the standard library, no
 third-party dependencies):
 
-- `list` — pinned versions at a glance
-- `update <lib> [--commit SHA]` — fetch into a temp dir, **wipe** the destination
+- `list` — pinned versions at a glance, and whether each is behind upstream's
+  default branch
+- `update <lib> --commit <SHA>` — move to that exact commit.
+- `update <lib>` with no `--commit` — move to the **current HEAD of upstream's
+  default branch**. This is the only command in the pack that consults "latest",
+  and it is always an explicit, deliberate act: nothing in a normal build,
+  configure or CI run ever contacts the network or advances a pin. A build is
+  reproducible from the checkout alone.
+- `update <lib> --recheck` — re-vendor the commit already in the manifest,
+  without changing the pin. This is the repair operation for a tree someone has
+  edited by hand; `check` (below) detects the metadata drift, `--recheck`
+  restores the sources.
+
+Both `update` forms then: fetch into a temp dir, **wipe** the destination
   directories, re-copy the mapped paths, then rewrite **both `vendor.toml` and
   `VERSION`**, and print a diffstat. Writing the manifest is not optional: it is
   the authoritative pin, so an `update --commit` that changed only `VERSION`
@@ -678,7 +690,13 @@ redundant with the manifest deliberately: someone reading `libs/sokol/` should
 see provenance without hunting for a tool. `vendor.py check` is what keeps the
 redundancy honest.
 
-Initial pins (upstream HEAD as of 2026-09-07):
+**Initial pins.** The table below records upstream HEAD as of 2026-09-07, the
+day the design was written. It is a starting point, not a requirement: two of
+the four moved within a day (sokol to `c24221dc` and imgui to `148d128f` by
+2026-09-08), so the implementer should run `vendor.py update` on each library at
+the start of implementation and commit whatever SHAs that produces. What matters
+is that the manifest, the `VERSION` files and the vendored trees agree — which
+`check` enforces — not that any particular commit was chosen.
 
 | library | commit |
 |---|---|
