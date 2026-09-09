@@ -1,38 +1,50 @@
 # Locate sokol-shdc by HOST, not target: the tool runs on the build machine even
 # when cross-compiling to Emscripten, which is the common case.
+#
+# CACHE INTERNAL, not a plain set(): this file is include()d once, from
+# game-lib's own root directory scope, but gamelib_add_shader() is a global
+# function callable from any consumer's directory scope. A plain set() here
+# would be invisible there -- CMake variables propagate only downward through
+# add_subdirectory, and a consumer's CMakeLists.txt is never a descendant of
+# game-lib's. A CACHE entry has no directory scope, so it reads back correctly
+# no matter where gamelib_add_shader() is called from. Both entries are
+# GAMELIB_-prefixed, so §3.3's cache whitelist (criterion 8b) already accepts
+# them unchanged.
 if(GAMELIB_SOKOL_SHDC)
-  set(GAMELIB_SHDC "${GAMELIB_SOKOL_SHDC}")
+  set(GAMELIB_SHDC "${GAMELIB_SOKOL_SHDC}" CACHE INTERNAL "sokol-shdc binary path")
 else()
   set(_bin "${CMAKE_CURRENT_LIST_DIR}/../tools/sokol-shdc/bin")
   if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-      set(GAMELIB_SHDC "${_bin}/linux_arm64/sokol-shdc")
+      set(GAMELIB_SHDC "${_bin}/linux_arm64/sokol-shdc" CACHE INTERNAL "sokol-shdc binary path")
     else()
-      set(GAMELIB_SHDC "${_bin}/linux/sokol-shdc")
+      set(GAMELIB_SHDC "${_bin}/linux/sokol-shdc" CACHE INTERNAL "sokol-shdc binary path")
     endif()
   elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
     if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "arm64")
-      set(GAMELIB_SHDC "${_bin}/osx_arm64/sokol-shdc")
+      set(GAMELIB_SHDC "${_bin}/osx_arm64/sokol-shdc" CACHE INTERNAL "sokol-shdc binary path")
     else()
-      set(GAMELIB_SHDC "${_bin}/osx/sokol-shdc")
+      set(GAMELIB_SHDC "${_bin}/osx/sokol-shdc" CACHE INTERNAL "sokol-shdc binary path")
     endif()
   elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
-    set(GAMELIB_SHDC "${_bin}/win32/sokol-shdc.exe")
+    set(GAMELIB_SHDC "${_bin}/win32/sokol-shdc.exe" CACHE INTERNAL "sokol-shdc binary path")
   else()
-    set(GAMELIB_SHDC "GAMELIB_SHDC-NOTFOUND")
+    set(GAMELIB_SHDC "GAMELIB_SHDC-NOTFOUND" CACHE INTERNAL "sokol-shdc binary path")
   endif()
 endif()
 
 # Default --slang from the selected backend, following upstream's own documented
 # mapping. Left empty under the dummy backend: there is no valid shader language,
-# and gamelib_add_shader() below turns that into a clear configure error.
+# and gamelib_add_shader() below turns that into a clear configure error. Also
+# CACHE INTERNAL, for the same cross-directory-scope reason as GAMELIB_SHDC above.
 set(_slang_map glcore glsl410 gles3 glsl300es metal metal_macos d3d11 hlsl5)
 list(FIND _slang_map "${GAMELIB_SOKOL_BACKEND_RESOLVED}" _si)
 if(_si EQUAL -1)
-  set(GAMELIB_SHDC_SLANG "")
+  set(GAMELIB_SHDC_SLANG "" CACHE INTERNAL "default --slang for the resolved sokol backend")
 else()
   math(EXPR _si "${_si} + 1")
-  list(GET _slang_map ${_si} GAMELIB_SHDC_SLANG)
+  list(GET _slang_map ${_si} _slang)
+  set(GAMELIB_SHDC_SLANG "${_slang}" CACHE INTERNAL "default --slang for the resolved sokol backend")
 endif()
 
 function(gamelib_add_shader)
@@ -48,6 +60,19 @@ function(gamelib_add_shader)
       "gamelib_add_shader: no vendored sokol-shdc for host "
       "${CMAKE_HOST_SYSTEM_NAME}/${CMAKE_HOST_SYSTEM_PROCESSOR}. "
       "Set GAMELIB_SOKOL_SHDC to a sokol-shdc binary.")
+  endif()
+  # Beyond the unsupported-host sentinel above, nothing else has checked that
+  # GAMELIB_SHDC actually names a usable binary: an empty value (which a
+  # directory-scope bug could produce silently -- see the CACHE INTERNAL note
+  # above), a stale GAMELIB_SOKOL_SHDC override, or a path to a file that was
+  # never vendored would otherwise all reach add_custom_command() and either
+  # fail with an opaque generator error or silently build a no-op rule.
+  if(NOT GAMELIB_SHDC OR NOT EXISTS "${GAMELIB_SHDC}")
+    message(FATAL_ERROR
+      "gamelib_add_shader: sokol-shdc binary not found at '${GAMELIB_SHDC}'. "
+      "If you set GAMELIB_SOKOL_SHDC, check that it still points at a real "
+      "binary; otherwise the vendored copy is missing -- run "
+      "'tools/vendor.py check'.")
   endif()
   if(NOT ARG_SLANG)
     set(ARG_SLANG "${GAMELIB_SHDC_SLANG}")

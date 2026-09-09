@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.21)
+project(gamelib_headless_gfx LANGUAGES C)
+add_subdirectory("${GAMELIB_ROOT}" gamelib EXCLUDE_FROM_ALL)
+add_executable(headless_gfx main.c)
+target_link_libraries(headless_gfx PRIVATE gamelib::sokol_gfx gamelib::sokol_log)

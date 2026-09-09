@@ -37,3 +37,15 @@ jobs:
                 -DGAMELIB_SOKOL_BACKEND=dummy \
                 -DGAMELIB_IMGUI=OFF -DGAMELIB_MINIAUDIO=OFF
           cmake --build build --target gamelib_sokol_gfx gamelib_box2d gamelib_stb_image
+      - name: Configure, build and RUN a linking consumer (dummy backend)
+        # The step above only ever builds static libraries: target_link_libraries()
+        # on a STATIC library never invokes the linker, so this job could pass
+        # forever even if gamelib_sokol_gfx's PUBLIC interface ever acquired an
+        # X11 dependency. tests/headless-gfx/ is a real add_executable() that
+        # calls sg_setup()/sg_shutdown() under the dummy backend -- building
+        # and running it here is the actual regression test.
+        run: |
+          cmake -S tests/headless-gfx -B build-headless-gfx -DCMAKE_BUILD_TYPE=Debug \
+                -DGAMELIB_ROOT="$PWD" -DGAMELIB_SOKOL_BACKEND=dummy
+          cmake --build build-headless-gfx
+          ./build-headless-gfx/headless_gfx

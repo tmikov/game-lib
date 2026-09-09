@@ -188,22 +188,34 @@ Every other stb target is used as `#include <stb/stb_image.h>` and so on.
 
 miniaudio's built-in decoders cover WAV, MP3 and FLAC — not Ogg Vorbis.
 Linking both `gamelib::miniaudio` and `gamelib::stb_vorbis` does **not** by
-itself make `ma_engine` or `ma_decoder` read `.ogg` files. miniaudio needs a
-custom decoding backend registered through an `ma_decoding_backend_vtable`
-for any format beyond its built-ins, and this pack does not supply that
-adapter (doing so would mean shipping original runtime code, which is out of
-scope for a vendoring pack). Two workflows are actually supported:
+itself make `ma_engine` or `ma_decoder` read `.ogg` files: this pack declares
+them as two independent targets, and `gamelib::miniaudio`'s own translation
+unit never includes `stb_vorbis.c`, so nothing wires the two together for
+you (doing that here would couple two targets this pack keeps separate on
+purpose). Two workflows are actually supported:
 
 1. **Decode with stb_vorbis, hand miniaudio the PCM.** Decode the whole file
    (or stream it) with `stb_vorbis_decode_memory`/`stb_vorbis_decode_filename`
    or the pull API, then feed the resulting samples to miniaudio through
    `ma_audio_buffer` or your own `ma_data_source`.
-2. **Write the vtable adapter yourself**, wrapping `stb_vorbis`'s decoding
-   calls in an `ma_decoding_backend_vtable` and registering it via
-   `ppCustomBackendVTables` on `ma_decoder_config`/`ma_resource_manager_config`/
-   `ma_engine_config`. `miniaudio.h`'s own "Custom Decoders" section (search
-   for `ma_decoding_backend_vtable`) describes the shape of this adapter; the
-   pack does not include one.
+2. **Let miniaudio's own stb_vorbis adapter compile in.** `miniaudio.h`
+   already ships a complete `ma_decoding_backend_vtable` for stb_vorbis
+   (search it for `STB_VORBIS_INCLUDE_STB_VORBIS_H` / `MA_HAS_VORBIS` /
+   `g_ma_decoding_backend_vtable_stbvorbis`) — you do not need to write one.
+   It compiles in automatically when, in the **same translation unit** that
+   defines `MINIAUDIO_IMPLEMENTATION` and includes `<miniaudio/miniaudio.h>`,
+   `stb_vorbis.h`'s own include guard (`STB_VORBIS_INCLUDE_STB_VORBIS_H`) is
+   already defined — i.e. you included
+   `<stb/stb_vorbis.c>` (with `STB_VORBIS_HEADER_ONLY`, per
+   [stb_vorbis is different](#stb_vorbis-is-different)) before
+   `<miniaudio/miniaudio.h>` in that TU. Once `MA_HAS_VORBIS` is defined this
+   way, `ma_decoder_init*`/`ma_engine_play*` pick `.ogg` files up through
+   their normal format auto-detection — no `ppCustomBackendVTables`
+   registration needed. This pack does not do this wiring for you: doing so
+   in `gamelib::miniaudio`'s own implementation TU would force every
+   consumer of `gamelib::miniaudio` to also compile `stb_vorbis.c`, coupling
+   two targets that are deliberately independent. Set it up in your own
+   game's translation unit if you want it.
 
 Do not assume the two targets compose without one of the above.
 
@@ -364,10 +376,14 @@ not aggregate or restate their terms — read the files:
 - **headless** — a `debian:bookworm-slim` container with a compiler, CMake
   and Python installed and **no X11 development packages at all**.
   Configures with `GAMELIB_SOKOL_BACKEND=dummy` and builds
-  `gamelib_sokol_gfx`, `gamelib_box2d` and `gamelib_stb_image`. This is the
-  regression test for the gfx/app split described above: if it ever starts
-  requiring an X11 dev package, something pulled a windowing dependency into
-  a target that is supposed to be headless.
+  `gamelib_sokol_gfx`, `gamelib_box2d` and `gamelib_stb_image`, then
+  separately configures, builds and **runs** `tests/headless-gfx/` — a real
+  `add_executable()` that calls `sg_setup()`/`sg_shutdown()`. The static-library
+  build alone cannot prove a link ever succeeds (`target_link_libraries()` on
+  a `STATIC` library never invokes the linker), so the executable is the
+  actual regression test for the gfx/app split described above: if it ever
+  starts requiring an X11 dev package, something pulled a windowing
+  dependency into a target that is supposed to be headless.
 
 ## Running the acceptance suite locally
 

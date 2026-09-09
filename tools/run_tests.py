@@ -32,10 +32,18 @@ def build(build_dir, *args):
 
 @scenario
 def smoke():
-    """game-lib configures and builds as a top-level project."""
+    """game-lib configures and builds as a top-level project, then runs the
+    one example that is headless and deterministic enough for CI to actually
+    execute -- physics.c returns non-zero itself if the box never comes to
+    rest in a plausible band, but nothing previously ran it to find out."""
     with tempfile.TemporaryDirectory() as d:
-        cmake(ROOT, Path(d) / "b")
-        build(Path(d) / "b")
+        b = Path(d) / "b"
+        cmake(ROOT, b)
+        build(b)
+        exe = next(p for p in b.rglob("gamelib_example_physics*")
+                   if p.is_file() and os.access(p, os.X_OK) and p.suffix in ("", ".exe"))
+        r = subprocess.run([str(exe)], capture_output=True, text=True)
+        assert r.returncode == 0, f"physics example failed: {r.stdout}{r.stderr}"
 
 @scenario
 def vendor_check():
@@ -189,6 +197,12 @@ def consumer_isolation():
         assert r.returncode == 0, f"consumer ran but failed: {r.stdout}{r.stderr}"
 
         objs = [p.as_posix() for p in b.rglob("*") if p.suffix in (".o", ".obj")]
+        # An empty objs list would make every "forbidden" check below pass
+        # vacuously (e.g. if the glob pattern or build layout ever changed).
+        # Assert stb_image's own object exists first, so the scenario fails
+        # loudly instead of silently proving nothing.
+        assert any("gamelib_stb_image_impl" in o for o in objs), \
+            f"stb_image's own object was never built -- scan found nothing: {objs}"
         for forbidden in ("sokol", "imgui", "miniaudio", "box2d"):
             leaked = [o for o in objs if forbidden in o]
             assert not leaked, f"{forbidden} objects built but never linked: {leaked}"
@@ -217,6 +231,26 @@ def headless_dummy():
         build(b, "--target", "gamelib_sokol_gfx")
 
 @scenario
+def headless_gfx_links():
+    """The dummy backend must configure, BUILD and LINK an executable, not
+    just a static library. target_link_libraries() on a STATIC library (what
+    gamelib_sokol_gfx is) never invokes the linker, so building only static
+    targets -- as headless_dummy above does, and as the headless CI job used
+    to do -- could never catch a stray windowing dependency reaching
+    sokol_gfx's PUBLIC link interface. tests/headless-gfx/ is a real
+    add_executable() that calls sg_setup()/sg_shutdown() and is run here too,
+    since the dummy backend needs no display."""
+    with tempfile.TemporaryDirectory() as d:
+        b = Path(d) / "b"
+        cmake(ROOT / "tests" / "headless-gfx", b, f"-DGAMELIB_ROOT={ROOT}",
+              "-DGAMELIB_SOKOL_BACKEND=dummy")
+        build(b)
+        exe = next(p for p in b.rglob("headless_gfx*")
+                   if p.is_file() and os.access(p, os.X_OK) and p.suffix in ("", ".exe"))
+        r = subprocess.run([str(exe)], capture_output=True, text=True)
+        assert r.returncode == 0, f"headless_gfx ran but failed: {r.stdout}{r.stderr}"
+
+@scenario
 def sokol_backend_rejects_invalid():
     """An unsupported GAMELIB_SOKOL_BACKEND must fail configure with a clear
     error naming the bad value, not silently mispair into a wrong macro
@@ -238,6 +272,26 @@ def compile_includes():
         b = Path(d) / "b"
         cmake(ROOT / "tests" / "compile-includes", b, f"-DGAMELIB_ROOT={ROOT}")
         build(b)
+
+@scenario
+def shader_consumer():
+    """gamelib_add_shader() must work when called from a genuine consumer's
+    directory scope, not just from inside game-lib's own examples/. Every
+    in-tree example calls it from a descendant of game-lib's own root
+    CMakeLists.txt, which is exactly the scope where a directory-scoped
+    set() of GAMELIB_SHDC / GAMELIB_SHDC_SLANG in cmake/GameLibShader.cmake
+    stayed invisible while still passing every other scenario -- CMake
+    variables propagate only downward through add_subdirectory, and a
+    consumer's project is never a descendant of game-lib's.
+    tests/shader-consumer/ is structured like tests/consumer-isolation/:
+    game-lib is add_subdirectory()'d INTO it, not the reverse."""
+    with tempfile.TemporaryDirectory() as d:
+        b = Path(d) / "b"
+        cmake(ROOT / "tests" / "shader-consumer", b, f"-DGAMELIB_ROOT={ROOT}")
+        build(b)
+        hdr = next(b.rglob("triangle.h"), None)
+        assert hdr is not None and hdr.is_file(), \
+            "gamelib_add_shader() did not produce triangle.h for an external consumer"
 
 @scenario
 def shader_incremental():
@@ -290,12 +344,35 @@ def no_global_state():
         cmake(ROOT / "tests" / "no-global-state", b, f"-DGAMELIB_ROOT={ROOT}",
               "--trace-expand", f"--trace-redirect={trace}")
 
+        # A trace line looks like "<path>(<line>):  <command>(<args>)". A naive
+        # line.partition(":") breaks on Windows: the path starts "C:/...", so
+        # the drive-letter colon is what gets split on, not the one after the
+        # location -- "path" becomes just "C" and the startswith check below
+        # never matches. Matching "(<digits>):" instead finds the real
+        # location/command boundary regardless of colons earlier in the path.
+        loc_re = re.compile(r"^(.*)\(\d+\):")
         ours = []
         for line in trace.read_text(errors="replace").splitlines():
-            path, _, rest = line.partition(":")
-            if not path.startswith(str(ROOT)) or "/tests/" in path:
+            m = loc_re.match(line)
+            if not m:
                 continue
-            ours.append((path, rest))
+            path = Path(m.group(1))
+            try:
+                rel = path.relative_to(ROOT)
+            except ValueError:
+                continue                 # not under game-lib's own tree
+            if "tests" in rel.parts:
+                continue                 # the scenario's own CMakeLists.txt
+            # Comparing Path objects (not str(ROOT)) also fixes the other
+            # Windows failure mode: str(ROOT) is backslash-separated there
+            # while CMake's trace output always uses forward slashes, so a
+            # plain startswith() on strings would never match either.
+            ours.append((path.as_posix(), line[m.end():]))
+
+        assert ours, (
+            "no game-lib-owned trace lines found at all -- either ROOT is "
+            "wrong or the location-line regex stopped matching; every "
+            "assertion below would otherwise pass vacuously")
 
         # Word-boundary matches: a naive substring check would flag the
         # correct, target-scoped commands game-lib uses throughout (e.g.
@@ -319,7 +396,7 @@ def no_global_state():
         # source file rather than a string that can never appear on these
         # lines. Confirmed by grep that no other set(... PARENT_SCOPE) exists
         # in that file, so this stays exactly as narrow as a name-based match.
-        gamelib_library_cmake = str(ROOT / "cmake" / "GameLibLibrary.cmake")
+        gamelib_library_cmake = (ROOT / "cmake" / "GameLibLibrary.cmake").as_posix()
         hits = [l for p, l in ours
                 if "PARENT_SCOPE" in l and gamelib_library_cmake not in p]
         assert not hits, f"unexpected PARENT_SCOPE in game-lib: {hits[:3]}"
@@ -333,6 +410,11 @@ def option_off():
         cmake(ROOT / "tests" / "option-off", b, f"-DGAMELIB_ROOT={ROOT}",
               "--trace-expand", f"--trace-redirect={trace}")
         text = trace.read_text(errors="replace")
+        # An empty (or truncated) trace file would make the assertion below
+        # pass vacuously -- it only proves the string is absent, not that the
+        # trace actually captured the configure.
+        assert "add_subdirectory" in text, \
+            f"trace file has no evidence of a configure at all: {text[:500]!r}"
         assert "libs/miniaudio/CMakeLists.txt" not in text, \
             "libs/miniaudio/CMakeLists.txt was parsed despite GAMELIB_MINIAUDIO=OFF"
 
