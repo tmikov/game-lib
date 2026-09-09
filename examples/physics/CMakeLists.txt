@@ -1,1 +1,2 @@
-gamelib_add_example(NAME physics SOURCES physics.c LIBS gamelib::box2d)
+add_executable(physics physics.c)
+target_link_libraries(physics PRIVATE gamelib::box2d)

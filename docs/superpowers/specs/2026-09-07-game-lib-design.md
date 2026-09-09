@@ -64,8 +64,7 @@ game-lib/
                               add_subdirectory(libs), examples, summary
   cmake/
     GameLibLibrary.cmake      gamelib_add_library(), gamelib_add_header_library(),
-                              gamelib_add_interface_library(),
-                              gamelib_add_example()
+                              gamelib_add_interface_library()
     GameLibShader.cmake       gamelib_add_shader()  (§6.2)
     single_header_impl.c.in   template for generated single-header impl TUs
   libs/
@@ -771,7 +770,7 @@ has no standard equivalent at any level.
 
 ## 6. CMake helpers
 
-`cmake/GameLibLibrary.cmake` provides four functions. They handle only the
+`cmake/GameLibLibrary.cmake` provides three target-creating helpers, plus the predicate `gamelib_have_targets()` that the guarded `add_subdirectory` lines use. They handle only the
 *uniform* parts; anything platform- or config-varying stays as plain CMake in
 the library's own `CMakeLists.txt`, where a reader looks for it.
 
@@ -824,9 +823,19 @@ For the header-only libraries that need no TU at all — `entt`, `handmademath`,
 a single-header library that has an implementation define (stb, sokol_log,
 sokol_time). HandmadeMath v2 has no such define, which is why it takes this path.
 
+An example's own `CMakeLists.txt` deliberately uses **no game-lib helper**:
+
 ```cmake
-gamelib_add_example(NAME clear SOURCES clear.c LIBS gamelib::sokol_app)
+add_executable(clear clear.c)
+target_link_libraries(clear PRIVATE gamelib::sokol_app ...)
 ```
+
+An example exists to be read and copied — it has no build role in any
+consumer's project, since `examples/` is gated on `PROJECT_IS_TOP_LEVEL` and is
+never parsed when game-lib is a subdirectory. A helper would optimise typing
+inside game-lib's own build, which nobody copies, at the cost of teaching a
+private function that does not exist outside this tree. The example must be
+the thing you paste.
 
 Config and platform variation is expected to read cleanly — generator
 expressions (`$<PLATFORM_ID:Linux>`, `$<CONFIG:Debug>`) suit it well, as in
@@ -1067,7 +1076,7 @@ and are pinned to a commit.
 ## 8. Examples, CI, and acceptance criteria
 
 Examples are gated on `if(PROJECT_IS_TOP_LEVEL)` so a consumer never builds
-them. Each is ~5 lines via `gamelib_add_example()`, and each doubles as the
+them. Each is a plain `add_executable` + `target_link_libraries` (§6), and each doubles as the
 build smoke test for its targets.
 
 | example | exercises |

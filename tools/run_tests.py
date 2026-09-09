@@ -40,7 +40,7 @@ def smoke():
         b = Path(d) / "b"
         cmake(ROOT, b)
         build(b)
-        exe = next(p for p in b.rglob("gamelib_example_physics*")
+        exe = next(p for p in b.rglob("physics*")
                    if p.is_file() and os.access(p, os.X_OK) and p.suffix in ("", ".exe"))
         r = subprocess.run([str(exe)], capture_output=True, text=True)
         assert r.returncode == 0, f"physics example failed: {r.stdout}{r.stderr}"
@@ -308,7 +308,7 @@ def shader_incremental():
     with tempfile.TemporaryDirectory() as d:
         b = Path(d) / "b"
         cmake(ROOT, b)
-        build(b, "--target", "gamelib_example_shader")
+        build(b, "--target", "shader")
         hdr = next(b.rglob("triangle.h"))
 
         glsl = ROOT / "examples" / "shader" / "triangle.glsl"
@@ -319,13 +319,13 @@ def shader_incremental():
             first = hdr.stat().st_mtime_ns
             time.sleep(1.1)                      # coarse mtime granularity
             glsl.write_text(original_glsl + "\n// touch\n")
-            build(b, "--target", "gamelib_example_shader")
+            build(b, "--target", "shader")
             second = hdr.stat().st_mtime_ns
             assert second != first, "editing the .glsl did not regenerate"
 
             time.sleep(1.1)
             included.write_text(original_included + "\n// touch\n")
-            build(b, "--target", "gamelib_example_shader")
+            build(b, "--target", "shader")
             assert hdr.stat().st_mtime_ns != second, \
                 "editing an @included file did not regenerate (DEPFILE not wired up)"
         finally:

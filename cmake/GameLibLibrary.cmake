@@ -73,14 +73,6 @@ function(gamelib_add_header_library)
   gamelib_add_library(NAME ${ARG_NAME} SOURCES "${gen}" LIBS ${ARG_LIBS})
 endfunction()
 
-function(gamelib_add_example)
-  cmake_parse_arguments(PARSE_ARGV 0 ARG "" "NAME" "SOURCES;LIBS")
-  if(NOT ARG_NAME OR NOT ARG_SOURCES)
-    message(FATAL_ERROR "gamelib_add_example: NAME and SOURCES are required")
-  endif()
-  add_executable(gamelib_example_${ARG_NAME} ${ARG_SOURCES})
-  target_link_libraries(gamelib_example_${ARG_NAME} PRIVATE ${ARG_LIBS})
-endfunction()
 
 # True when every named gamelib target has been declared. Examples use this so
 # that a disabled library silently removes its example rather than erroring.
