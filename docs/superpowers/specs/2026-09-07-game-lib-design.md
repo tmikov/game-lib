@@ -130,21 +130,34 @@ headers, and its vendor-owned subtree is simply `tools/sokol-shdc/bin/`.
 vendor-owned for one library and hand-written for another, and a wrong path in
 `vendor.py`'s wipe step would silently delete our own impl TUs.
 
-`vendor.py` does write three things *outside* that subtree, but only ever by
+`vendor.py` writes a few files *outside* that subtree, but only ever by
 rewriting a specific file, never by deleting a directory: `tools/vendor.toml`,
-`libs/<name>/VERSION`, and `libs/<name>/LICENSE` (copied from upstream). Nothing
-else in the repository is machine-written.
+and each entry's `VERSION` and `LICENSE` — which for a library means
+`libs/<name>/…` and for the vendored tool means `tools/sokol-shdc/…`. Nothing
+else in the repository is machine-written, and `vendor.py check` (§7) covers
+**every** manifest entry, tools included.
 
 This is the `include/<lib>/` refinement identified in
 [apple2tc.md §6](../../../apple2tc.md) — present in neither surveyed repo —
 without the file-relocation cost that made it awkward there.
 
-**No library needs a PRIVATE include directory.** Every vendored library here is
-either header-only or header-plus-our-own-TU, and our TUs use the
-`<name/header.h>` form that the PUBLIC root already provides. (This was not true
-of an earlier draft that vendored SoLoud, whose upstream `.cpp` files include
-`"soloud.h"` bare from nested subdirectories; replacing it with miniaudio
-removed the only case.)
+**No library needs a PRIVATE include directory** — but not because none of them
+compiles upstream sources. Dear ImGui compiles five upstream `.cpp` files and
+Box2D compiles its whole upstream `src/`. It works because of the two include
+forms upstream code actually uses, both of which resolve under this layout:
+
+- **Sibling-relative** — `imgui.cpp` → `"imgui.h"`, Box2D's `body.c` →
+  `"array.h"`. Resolved by quote-relative lookup in the file's own directory.
+- **Library-prefixed** — Box2D's `src/body.h` → `"box2d/math_functions.h"`.
+  Quote-relative lookup fails (there is no `src/box2d/`), so it falls through to
+  the include path, where the PUBLIC root `libs/box2d/` resolves it to
+  `libs/box2d/box2d/math_functions.h`. The doubling of §2.1 is what makes this
+  work.
+
+Our own TUs use the `<name/header.h>` form, which the PUBLIC root also provides.
+A library whose sources include headers **bare from a nested directory** would
+need a PRIVATE entry; the SoLoud that an earlier draft vendored was exactly that
+case, and replacing it with miniaudio removed it.
 
 **A standing caution, since it cost a whole finding once.** A PRIVATE include
 directory hides a *header path*; it does not isolate a *linker symbol*. Before
@@ -268,7 +281,7 @@ readable on its own.
 Everything is expressed with `target_*` commands. Language requirements become
 `target_compile_features(gamelib_imgui PUBLIC cxx_std_11)`.
 
-This rule is testable; see §8, criterion 7.
+This rule is testable; see §8, criterion 8.
 
 ## 4. Target catalogue
 
@@ -342,8 +355,17 @@ linked.
 #include <stb/stb_vorbis.c>
 ```
 
-It pairs directly with `gamelib::miniaudio`, whose built-in decoders cover WAV,
-MP3 and FLAC but not Ogg Vorbis. The README must say both things.
+It exists because `gamelib::miniaudio`'s built-in decoders cover WAV, MP3 and
+FLAC but not Ogg Vorbis.
+
+**Linking both targets does not by itself make `ma_engine` or `ma_decoder` read
+Ogg files.** miniaudio requires a custom decoding backend registered through
+`ma_decoding_backend_vtable` for any format beyond its built-ins. The pack does
+not supply that adapter, and could not without adding original runtime code,
+which §1 excludes. So the README documents the two workflows the pack actually
+supports: decode with stb_vorbis and hand miniaudio the PCM
+(`ma_audio_buffer` / a raw data source), or write the vtable adapter yourself.
+Do not describe these two targets as though they compose automatically.
 
 ### 4.3 sokol_imgui is C++
 
@@ -530,9 +552,21 @@ Three constraints that are easy to miss and must be encoded in the CMake:
    exists for a consumer who prefers upstream's default.
 2. **Emscripten forbids a C standard flag.** miniaudio states: "You cannot use
    `-std=c*` compiler flags, nor `-ansi`. This only applies to the Emscripten
-   build." So `gamelib_miniaudio` must never carry `target_compile_features(...
-   c_std_*)` — or anything else that makes CMake emit `-std=`— under Emscripten.
-   This is the one place the pack's own conventions have to yield to a library.
+   build." Adding no `target_compile_features(... c_std_*)` is **not enough**: a
+   target's `C_STANDARD` property is initialised from `CMAKE_C_STANDARD`, so a
+   consumer who sets that variable before `add_subdirectory` would make CMake
+   emit `-std=` for our target without game-lib asking for anything. Under
+   Emscripten the target must therefore also clear the inherited property:
+
+   ```cmake
+   set_target_properties(gamelib_miniaudio PROPERTIES C_STANDARD "")
+   ```
+
+   which changes only our own target and no parent state, so §3.3 still holds.
+   **Documented limitation:** a `-std=` that the consumer put directly into
+   `CMAKE_C_FLAGS` cannot be undone from here; that case is theirs to fix, and
+   the README says so. This is the one place the pack's conventions yield to a
+   library.
 3. **Static linking only.** miniaudio "is not ABI compatible between any
    release, including bug fix releases", and recommends linking statically.
    That is already the pack's model, but it is a reason not to relax it.
@@ -550,10 +584,13 @@ instead. It was replaced on 2026-09-08, on these grounds:
   shipping miniaudio wrapped in a second layer, rather than avoiding it.
 - That layer is unmaintained: last upstream commit 2024-08-13, 122 open issues,
   against miniaudio's 2026-03-03 and 7.
-- ~200 vendored files became 2. The licence became more permissive (Unlicense or
-  MIT-0, versus zlib). The spatial-audio API became better: miniaudio has
-  listeners, cones, doppler and attenuation models where SoLoud has basic
-  panning.
+- ~200 vendored files became 2, and the licence became more permissive
+  (Unlicense or MIT-0, versus zlib).
+- The spatial-audio API is somewhat fuller — miniaudio adds cones and
+  per-sound attenuation control. This is a marginal gain, not a rout: SoLoud
+  also has 3D listeners with position, orientation and velocity, doppler via
+  `set3dSoundSpeed`, and attenuation models. Do not repeat the claim, made in an
+  earlier draft of this document, that SoLoud offers only basic panning.
 - Removing SoLoud is what allowed `gamelib::stb_vorbis` back into the catalogue
   (§4.2), and stb_vorbis is exactly what miniaudio needs for Ogg.
 
@@ -604,22 +641,38 @@ in every respect that matters, so this is a fresh vendor, not a port of anything
 - `libs/box2d/box2d/` ← upstream `include/box2d/*.h` at the top, upstream `src/`
   beneath it, per §2.1. Consumers write `#include <box2d/box2d.h>`.
 - **C17 is required**, not C99: `target_compile_features(gamelib_box2d PUBLIC c_std_17)`.
-- **System links: `m` on Unix.** `math_functions.c` uses `sqrtf` and friends.
-  It needs **no threads**: v3's multithreading is entirely user-supplied through
-  `b2WorldDef`'s task callbacks, and `scheduler.c` includes nothing beyond
-  `<stdio.h>` and `<string.h>`. Do not add a pthread dependency by analogy with
-  the other libraries here.
-- **SIMD.** Upstream defaults to SSE2 on x86-64 and NEON on arm64, both baseline,
-  so nothing is passed. `BOX2D_AVX2` is *not* enabled: it would produce binaries
-  that fault on pre-AVX2 hardware, which is the wrong default for a library
-  shipped to unknown machines. On Emscripten upstream wants `-msimd128 -msse2`.
-  `GAMELIB_BOX2D_AVX2` exists for a consumer targeting known hardware.
-- **We write our own CMakeLists, and this is a case where that matters.**
-  Box2D's own root `CMakeLists.txt` does
-  `string(APPEND CMAKE_C_FLAGS " -pthread -s USE_PTHREADS=1")` under Emscripten
-  — a directory-scoped global mutation of exactly the kind §3.3 prohibits.
-  Vendoring only `include/` and `src/` and writing our own target avoids
-  inheriting it.
+- **System links: `m` on Unix, and nothing else. This contract is specific to
+  v3.1.1 and must be re-verified on every update.** At v3.1.1, `src/` contains
+  22 calls to `sqrtf`/`cosf`/`sinf`/`atan2f` (hence libm) and **zero** thread
+  creation of any kind — no `pthread_create`, no `CreateThread`, no
+  `b2CreateThread` — because v3.1.1's multithreading is entirely user-supplied
+  through `b2WorldDef`'s task callbacks.
+
+  **This changes after v3.1.1.** Upstream's in-development 3.2.0 adds
+  `src/scheduler.c` and `src/parallel_for.c` with a built-in worker pool calling
+  `b2CreateThread`/`b2JoinThread` — files that do not exist at v3.1.1 at all. An
+  update past v3.1.1 therefore changes Box2D's link contract, and the
+  implementer must re-derive it rather than carry this paragraph forward.
+
+  Note also that grepping for `pthread` is **not** how to check this: 3.2.0
+  spawns threads through its own `b2CreateThread` abstraction and such a grep
+  finds nothing. Search for thread *creation*, by any spelling.
+- **SIMD.** Upstream defaults to SSE2 on x86-64 and NEON on arm64, both
+  baseline, so nothing is passed there. `BOX2D_AVX2` is *not* enabled: it would
+  produce binaries that fault on pre-AVX2 hardware, the wrong default for a
+  library shipped to unknown machines. `GAMELIB_BOX2D_AVX2` exists for a
+  consumer targeting known hardware.
+  **On Emscripten the pack passes `-msimd128 -msse2` PRIVATE**, matching
+  upstream's own `src/CMakeLists.txt`, unless SIMD is disabled.
+- **We write our own CMakeLists**, as for every library here — we vendor only
+  `include/` and `src/` and never `add_subdirectory` upstream's build.
+  For the avoidance of a wrong inference: upstream's root CMakeLists *does*
+  `string(APPEND CMAKE_C_FLAGS " -pthread -s USE_PTHREADS=1")` under Emscripten,
+  but guards it with `if (EMSCRIPTEN AND PROJECT_IS_TOP_LEVEL)` and comments
+  "Top level only, so a FetchContent consumer keeps control of its own threading
+  model." Upstream is being careful; this is **not** an example of the problem
+  §3.3 describes, and an earlier draft of this document wrongly presented it as
+  one.
 
 ### 5.6 entt
 
@@ -631,8 +684,10 @@ so a consumer writes `#include <entt/entt.hpp>`. An INTERFACE target, no TU.
 "supports at least C++20". Ours therefore carries
 `target_compile_features(gamelib_entt INTERFACE cxx_std_20)`.
 
-That is the highest language bar in the pack, and it is confined to this one
-target: nothing else here needs more than C++11. A consumer linking
+That is the highest bar the pack *imposes*: `gamelib::entt` is the only target
+whose interface demands more than C++11. (itlib ships individual headers needing
+C++17 or C++20, but its target floor is C++11 and the choice is per header —
+see §5.8.) A consumer linking
 `gamelib::entt` is opting their whole target into C++20, which is worth saying
 plainly in the README rather than discovering through a compile error.
 
@@ -669,11 +724,22 @@ unused header costs a consumer nothing at all — no compilation, no code size �
 and choosing a subset would mean revisiting the choice every time someone wants
 one more.
 
-`target_compile_features(gamelib_itlib INTERFACE cxx_std_11)`: most headers are
-C++11, and the handful that need C++17 (`pmr_allocator.hpp`, and `sentry.hpp`
-optionally) are the consumer's problem to opt into, exactly as upstream
-documents per header. Declaring C++17 for all of them would impose the highest
-bar on every user of the cheapest header.
+`target_compile_features(gamelib_itlib INTERFACE cxx_std_11)` — the floor, not
+the range. Upstream documents a per-header standard, and the headers are not
+uniform:
+
+| standard | headers |
+|---|---|
+| C++11 | the majority, including `small_vector.hpp` |
+| C++11, better with C++17 | `span.hpp`, `sentry.hpp`, `data_mutex.hpp`, `type_traits.hpp` |
+| **C++17 required** | `pmr_allocator.hpp`, `rand_dist.hpp`, `strutil.hpp` |
+| **C++20 required** | `generator.hpp`, `opt_ref_buffer.hpp` |
+
+Declaring the maximum on the aggregate target would impose C++20 on every user
+of the cheapest header, so the target declares the floor and the consumer opts
+into a higher standard themselves for the headers that need one — exactly as
+upstream documents. The README reproduces this table, because a consumer who
+includes `generator.hpp` on C++11 gets an incomprehensible error otherwise.
 
 **Why itlib is here at all.** It replaces the only two Abseil facilities nbolo
 actually used — `absl::Span` and `absl::InlinedVector` — with
@@ -684,7 +750,7 @@ has no standard equivalent at any level.
 
 ## 6. CMake helpers
 
-`cmake/GameLibLibrary.cmake` provides three functions. They handle only the
+`cmake/GameLibLibrary.cmake` provides four functions. They handle only the
 *uniform* parts; anything platform- or config-varying stays as plain CMake in
 the library's own `CMakeLists.txt`, where a reader looks for it.
 
@@ -851,6 +917,20 @@ Three deliberate differences from the equivalent in `nbolo`
    `add_custom_target(... ALL)`. An `ALL` target would build regardless of what
    the consumer selected, which contradicts §3.2, and a target name derived from
    the output filename collides the moment two examples both produce `shader.h`.
+
+   The generation itself is an `add_custom_command(OUTPUT ...)` whose `DEPENDS`
+   names **three** things, all of which must be there or the build goes stale
+   silently:
+   - the `.glsl` input;
+   - **the `sokol-shdc` executable itself**, so that re-vendoring the tool
+     regenerates every shader rather than leaving output from the old compiler;
+   - **any files the shader `@include`s.** sokol-shdc supports filesystem
+     `@include`, so these cannot be enumerated in CMake. Pass
+     `--dependency-file` and hand the result to `DEPFILE`, which is what makes
+     an edit to an included `.glsl` trigger a rebuild.
+
+   A clean build of the `shader` example proves none of this; only an
+   incremental edit does. Criterion 8 exists for that.
 2. **`SLANG` defaults from the backend**, following upstream's own documented
    mapping: `glcore`→`glsl410`, `gles3`→`glsl300es`, `metal`→`metal_macos`,
    `d3d11`→`hlsl5`. With `GAMELIB_SOKOL_BACKEND=dummy` there is no valid shader
@@ -887,14 +967,24 @@ manifest line plus a re-vendor.
 `tools/vendor.py` (Python 3.11+, `tomllib` from the standard library, no
 third-party dependencies):
 
-- `list` — pinned versions at a glance, and whether each is behind upstream's
-  default branch
+- `list` — the pinned versions, read from the manifest. **Offline**; it reports
+  what is pinned, not what is available. `list --check-upstream` additionally
+  contacts each remote to say whether a pin is behind, and is the only other
+  command that touches the network.
 - `update <lib> --commit <SHA>` — move to that exact commit.
-- `update <lib>` with no `--commit` — move to the **current HEAD of upstream's
-  default branch**. This is the only command in the pack that consults "latest",
-  and it is always an explicit, deliberate act: nothing in a normal build,
-  configure or CI run ever contacts the network or advances a pin. A build is
-  reproducible from the checkout alone.
+- `update <lib>` with no `--commit` — move to the **latest upstream release
+  tag** if the project publishes releases (Box2D, EnTT and HandmadeMath do), and
+  otherwise to the current HEAD of the default branch. Preferring a tag matters:
+  it is what keeps the pin on an audited revision rather than on whatever landed
+  that morning.
+
+  Together with `list --check-upstream`, these are the only commands that
+  contact the network. Nothing in a normal build, configure or CI run does; a
+  build is reproducible from the checkout alone.
+
+  **An update can change a library's build contract**, and re-deriving it is
+  part of the update, not a follow-up. §5.5 is the worked example: Box2D gains a
+  threading scheduler after v3.1.1, so the link line changes.
 - `update <lib> --recheck` — re-vendor the commit already in the manifest,
   without changing the pin. This is the repair operation for a tree someone has
   edited by hand; `check` (below) detects the metadata drift, `--recheck`
@@ -909,9 +999,19 @@ Both `update` forms then: fetch into a temp dir, **wipe** the destination
   `git init` + `git remote add` + `git fetch --depth 1 origin <sha>` +
   `git checkout FETCH_HEAD`, falling back to a full clone when the server
   refuses to serve an arbitrary SHA.
-- `check` — assert every `libs/*/VERSION` matches the manifest; run in CI
+- `check` — for **every manifest entry, tool included**, assert that (a) its
+  `VERSION` file agrees with the manifest, and (b) the recorded `tree_sha256`
+  matches a hash recomputed over the vendored subtree. Run in CI.
 
-`libs/<name>/VERSION` is generated and marked as such in its own text. It is
+  Part (b) is what makes the guarantee real. A VERSION-versus-manifest
+  comparison alone would pass happily on a vendored header someone edited by
+  hand, which is precisely the drift `update --recheck` exists to repair — and a
+  repair command is useless without detection. `VERSION` therefore carries a
+  `tree_sha256` line: the SHA-256 over the subtree's files in sorted path order,
+  including the shader-compiler binaries.
+
+Each entry's `VERSION` file (`libs/<name>/VERSION`, or
+`tools/sokol-shdc/VERSION`) is generated and marked as such in its own text. It is
 redundant with the manifest deliberately: someone reading `libs/sokol/` should
 see provenance without hunting for a tool. `vendor.py check` is what keeps the
 redundancy honest.
@@ -936,10 +1036,10 @@ is that the manifest, the `VERSION` files and the vendored trees agree — which
 | itlib | HEAD | `8a6bade082fa15a9f48a8a849f17e3305cd1e5e3` |
 | sokol-shdc *(tool)* | HEAD | `11d0cf678105d614d675e6d9bd2aaf3eeff12f8c` |
 
-Four of these have upstream releases and are pinned to the **tag**, not to HEAD:
-Box2D, EnTT and HandmadeMath all publish versioned releases, and a released tag
-is a better default than whatever was on the branch that day. The rest have no
-release cadence and are pinned to a commit.
+Three of these have upstream releases and are pinned to the **tag** rather than
+to HEAD — Box2D, EnTT and HandmadeMath — because a released tag is a better
+default than whatever was on the branch that day. The rest publish no releases
+and are pinned to a commit.
 
 ## 8. Examples, CI, and acceptance criteria
 
@@ -960,7 +1060,7 @@ build smoke test for its targets.
 `entt`, `handmademath` and `itlib` get no example of their own: they are
 header-only libraries with no initialisation and no interaction with the rest of
 the pack, so an example would demonstrate upstream's API rather than anything
-about game-lib. They are covered by criterion 7 instead.
+about game-lib. They are covered by criterion 6 instead.
 
 CI (GitHub Actions): ubuntu-latest, macos-latest, windows-latest, each building
 everything; plus `vendor.py check`; plus a **headless job** in a container with
@@ -975,7 +1075,7 @@ display.
    succeeds on Linux, macOS and Windows; all seven examples build.
 2. A scratch consumer that does `add_subdirectory(game-lib EXCLUDE_FROM_ALL)`
    and links **only** `gamelib::stb_image` builds *and runs*, and the build tree
-   contains **no** sokol, imgui or miniaudio object files. The consumer must
+   contains **no** sokol, imgui, miniaudio or box2d object files. The consumer must
    actually **call** the decoder (`stbi_load_from_memory` on an embedded PNG),
    not merely name the target: a link-only test would not have caught the
    missing `libm` dependency.
@@ -994,7 +1094,12 @@ display.
    `<box2d/box2d.h>` in one TU each and links the matching targets. This is what
    catches a wrong include prefix or a missing `cxx_std_20` on `gamelib::entt`,
    neither of which any example would exercise.
-7. The mechanical form of §3.3, in two parts, because a directory-scoped `set()`
+7. **Incremental**, not clean: build the `shader` example, then (a) touch the
+   `.glsl`, (b) touch a file it `@include`s, and (c) replace the `sokol-shdc`
+   binary. Each must regenerate the header and relink. A clean build passes
+   regardless of whether any of the three dependencies in §6.2 was wired up, so
+   only this catches a silently stale shader.
+8. The mechanical form of §3.3, in two parts, because a directory-scoped `set()`
    is invisible to the parent and so cannot be detected by comparing the
    parent's variables:
    a. Under `--trace-expand --trace-redirect=<file>`, no prohibited command
@@ -1020,7 +1125,6 @@ display.
   `add_subdirectory` is the contract; `FetchContent` works off the same
   mechanism for free. Add it when someone actually needs it.
 - Any original runtime code (see §1).
-- sokol-shdc or any shader compilation pipeline.
 - Android, iOS, MinGW.
 - cimgui, sokol_gl.
 - SoLoud, and with it sfxr, the speech synthesiser and the chiptune sound
@@ -1080,6 +1184,23 @@ facilities, `absl::Span` (7 uses) and `absl::InlinedVector` (4 uses). Checking
 what a dependency is actually used for, rather than what it offers, changed the
 answer from "vendor 1514 files" to "vendor two headers".
 
+### What the reviews keep catching (2026-09-08)
+
+Three failure modes have now recurred often enough to be worth naming, because
+they will recur during implementation too:
+
+1. **An edit that moves a path or narrows a rule is not followed through every
+   table that repeats it.** Five of round 3's six findings and several of round
+   5's were this.
+2. **A claim verified against the wrong revision.** §5.5's Box2D dependency
+   contract was checked against upstream HEAD (3.2.0) while the spec pins
+   v3.1.1 — and the two differ in exactly the audited property, since 3.2.0 adds
+   a threading scheduler. Always fetch with the pinned ref.
+3. **Upstream criticised for a global mutation that is in fact scoped.** Twice:
+   `CMAKE_EXECUTABLE_SUFFIX` in imgui-react-runtime's sokol CMakeLists, and
+   Box2D's Emscripten pthread flags. Both are directory-scoped or explicitly
+   guarded to top-level. Check the guard before citing the line.
+
 ### Spec review
 
 This spec was reviewed on 2026-09-08 by OpenAI Codex (codex-cli 0.153.4) acting
@@ -1113,5 +1234,5 @@ made again:
    They do not. This is what removed `gamelib::stb_vorbis` (§4.2).
 3. **A directory-scoped `set()` was claimed to reach the parent project.** It
    does not; only `PARENT_SCOPE` does. §3.3's rule survived but its
-   justification and its test (§8, criterion 6) were both wrong and were
-   rewritten.
+   justification and its test (the §3.3 check, criterion 8 in the current
+   numbering) were both wrong and were rewritten.
