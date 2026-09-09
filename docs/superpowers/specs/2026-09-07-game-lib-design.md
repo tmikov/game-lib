@@ -8,6 +8,15 @@ Status: approved, ready for implementation planning
 Research inputs: [apple2tc.md](../../../apple2tc.md),
 [imgui-react-runtime.md](../../../imgui-react-runtime.md).
 
+**How to read this document.** Authoritative: the architectural boundaries (§2,
+§3), the target catalogue (§4), the supported configurations (§3.2, §5), the
+update obligations (§7), and the acceptance criteria (§8) — those are the
+contract. Everything else is supporting material. In particular, the per-library
+evidence in §5 records *why* a link line or a language level is what it is, so
+that a later change can be reasoned about; it is not a transcription target, and
+routine CMake choices belong to the implementer. §10 is history, useful for
+avoiding repeated mistakes and for nothing else.
+
 ## 1. Purpose and scope
 
 `game-lib` is a curated, SHA-pinned bundle of third-party game libraries with
@@ -579,9 +588,21 @@ Ogg Vorbis is not among miniaudio's built-in decoders (WAV, MP3 and FLAC are).
 An earlier draft of this spec vendored [SoLoud](https://github.com/jarikomppa/soloud)
 instead. It was replaced on 2026-09-08, on these grounds:
 
-- **SoLoud's default backend already *was* miniaudio** — it vendors its own copy
-  of `miniaudio.h` under `src/backend/miniaudio/`. The pack was therefore
-  shipping miniaudio wrapped in a second layer, rather than avoiding it.
+- **SoLoud's default backend already used miniaudio** — it vendors its own copy
+  of `miniaudio.h` under `src/backend/miniaudio/`, so the pack shipped miniaudio
+  either way.
+
+  Be precise about what that did and did not mean, because the loose version of
+  this argument is wrong and would mislead a later decision. SoLoud used
+  miniaudio purely as a **device layer**: it compiles it with `MA_NO_DECODING`,
+  `MA_NO_WAV`, `MA_NO_FLAC` and `MA_NO_MP3`, and its device callback calls
+  `soloud->mix()` — SoLoud's own mixer. The two libraries shared an output
+  layer; SoLoud was *not* a thin wrapper around miniaudio's engine. The swap
+  replaced one real engine with another.
+
+  So the honest reason to swap is **not** "a library that contains another
+  library is redundant". It is that we do not need what SoLoud's engine adds
+  over miniaudio's, and miniaudio is maintained where SoLoud is not.
 - That layer is unmaintained: last upstream commit 2024-08-13, 122 open issues,
   against miniaudio's 2026-03-03 and 7.
 - ~200 vendored files became 2, and the licence became more permissive
@@ -807,9 +828,11 @@ sokol_time). HandmadeMath v2 has no such define, which is why it takes this path
 gamelib_add_example(NAME clear SOURCES clear.c LIBS gamelib::sokol_app)
 ```
 
-Config and platform variation uses generator expressions
-(`$<PLATFORM_ID:Linux>`, `$<CONFIG:Debug>`) rather than `if()` blocks, following
-imgui-react-runtime's `imgui-runtime` target.
+Config and platform variation is expected to read cleanly — generator
+expressions (`$<PLATFORM_ID:Linux>`, `$<CONFIG:Debug>`) suit it well, as in
+imgui-react-runtime's `imgui-runtime` target. Which of these or `if()` to use
+where is the implementer's call; what this spec fixes is that the variation
+lands on the *target*, never on directory or global state (§3.3).
 
 ### 6.1 The root preamble
 
@@ -1164,10 +1187,17 @@ display.
 
 ### Audio: SoLoud replaced by miniaudio (2026-09-08)
 
-Prompted by noticing that SoLoud's upstream had not moved since August 2024. The
-finding that settled it was that SoLoud's selected backend already vendored
-miniaudio, so the pack was shipping the same engine underneath an unmaintained
-wrapper. Full rationale, and what was given up, in §5.3.
+Prompted by noticing that SoLoud's upstream had not moved since August 2024:
+miniaudio offers what this pack needs from an audio engine and is maintained,
+where SoLoud is not, and SoLoud's remaining draw (sfxr, speech, chiptune
+sources) is not needed here.
+
+An earlier draft of this section justified the swap by saying SoLoud "was
+shipping the same engine underneath an unmaintained wrapper". That was wrong and
+is corrected in §5.3: SoLoud used miniaudio only as a device layer, with
+decoding compiled out and its own mixer driving the callback. Two libraries
+sharing an output layer are not the same engine — a distinction worth keeping
+for the next dependency decision.
 
 ### Libraries added from nbolo (2026-09-08)
 
