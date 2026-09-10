@@ -239,6 +239,45 @@ def compile_includes():
         cmake(ROOT / "tests" / "compile-includes", b, f"-DGAMELIB_ROOT={ROOT}")
         build(b)
 
+@scenario
+def shader_incremental():
+    """Editing the shader, or a file it @includes, regenerates the header.
+
+    The sokol-shdc binary itself is also named in DEPENDS (re-vendoring the
+    tool must regenerate every shader), but that edge is not exercised here:
+    proving it portably would mean mutating a vendored binary's mtime in the
+    working tree, which a test should not do. It was verified by hand for
+    this round: touching tools/sokol-shdc/bin/linux/sokol-shdc's mtime and
+    rebuilding regenerated triangle.h.
+    """
+    import time
+    with tempfile.TemporaryDirectory() as d:
+        b = Path(d) / "b"
+        cmake(ROOT, b)
+        build(b, "--target", "gamelib_example_shader")
+        hdr = next(b.rglob("triangle.h"))
+
+        glsl = ROOT / "examples" / "shader" / "triangle.glsl"
+        included = ROOT / "examples" / "shader" / "tint.glsl"
+        original_glsl = glsl.read_text()
+        original_included = included.read_text()
+        try:
+            first = hdr.stat().st_mtime_ns
+            time.sleep(1.1)                      # coarse mtime granularity
+            glsl.write_text(original_glsl + "\n// touch\n")
+            build(b, "--target", "gamelib_example_shader")
+            second = hdr.stat().st_mtime_ns
+            assert second != first, "editing the .glsl did not regenerate"
+
+            time.sleep(1.1)
+            included.write_text(original_included + "\n// touch\n")
+            build(b, "--target", "gamelib_example_shader")
+            assert hdr.stat().st_mtime_ns != second, \
+                "editing an @included file did not regenerate (DEPFILE not wired up)"
+        finally:
+            glsl.write_text(original_glsl)
+            included.write_text(original_included)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("scenarios", nargs="*", choices=[*SCENARIOS, []], default=[])

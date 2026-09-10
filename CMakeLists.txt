@@ -26,6 +26,8 @@ endif()
 
 add_subdirectory(libs)
 
+include("${GAMELIB_CMAKE_DIR}/GameLibShader.cmake")
+
 if(PROJECT_IS_TOP_LEVEL)
   add_subdirectory(examples)
 endif()
