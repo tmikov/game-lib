@@ -91,3 +91,56 @@ root    = "tools/sokol-shdc"
 subtree = "bin"
 license = "LICENSE"
 copy = [{ from = "bin", to = ".", tree = true }]
+
+# Third-party components statically linked into the sokol-shdc binaries above.
+#
+# Their licence texts must ship with those binaries. SPIRV-Tools, SPIRV-Cross
+# and glslang are Apache-2.0 in whole or part, and Apache-2.0 section 4 binds
+# redistribution in *object* form -- which is exactly what a prebuilt binary is.
+# sokol-tools-bin's own MIT LICENSE names only its author and does not mention
+# these at all, so shipping the binaries under that notice alone would be
+# incomplete. `strings` on the vendored Linux binary finds glslang, Tint,
+# SPIRV-Cross, SPIRV-Tools and fmt, so they are demonstrably in there.
+#
+# Upstream publishes no record of which sokol-tools revision built a given
+# sokol-tools-bin commit, so these cannot be pinned to the exact sources that
+# went into the binaries. Each file records the revision it was fetched from.
+[[sokol-shdc.bundled]]
+name = "glslang"
+url  = "https://github.com/KhronosGroup/glslang"
+path = "LICENSE.txt"
+
+[[sokol-shdc.bundled]]
+name = "SPIRV-Cross"
+url  = "https://github.com/KhronosGroup/SPIRV-Cross"
+path = "LICENSE"
+
+[[sokol-shdc.bundled]]
+name = "SPIRV-Tools"
+url  = "https://github.com/KhronosGroup/SPIRV-Tools"
+path = "LICENSE"
+
+[[sokol-shdc.bundled]]
+name = "SPIRV-Headers"
+url  = "https://github.com/KhronosGroup/SPIRV-Headers"
+path = "LICENSE"
+
+[[sokol-shdc.bundled]]
+name = "tint-extract"
+url  = "https://github.com/floooh/tint-extract"
+path = "LICENSE"
+
+[[sokol-shdc.bundled]]
+name = "fmt"
+url  = "https://github.com/fmtlib/fmt"
+path = "LICENSE"
+
+[[sokol-shdc.bundled]]
+name = "pystring"
+url  = "https://github.com/imageworks/pystring"
+path = "LICENSE"
+
+[[sokol-shdc.bundled]]
+name = "getopt"
+url  = "https://github.com/wc-duck/getopt"
+path = "LICENSE"
