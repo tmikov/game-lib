@@ -3,7 +3,11 @@
 Date: 2026-09-07
 Revised: 2026-09-08, after an external review (OpenAI Codex) raised 14 findings,
 all of which were independently verified and acted on. See §10.
-Status: approved, ready for implementation planning
+Status: implemented. **Superseded by [README.md](../../../README.md) wherever the
+two disagree** — the README is the living document and tracks the code; this
+spec is frozen at the state of the design on the dates above and is not
+maintained. Read it for the reasoning behind a boundary, never as a current
+description of behaviour.
 
 Research inputs: [apple2tc.md](../../../apple2tc.md),
 [imgui-react-runtime.md](../../../imgui-react-runtime.md).
@@ -383,6 +387,14 @@ which §1 excludes. So the README documents the two workflows the pack actually
 supports: decode with stb_vorbis and hand miniaudio the PCM
 (`ma_audio_buffer` / a raw data source), or write the vtable adapter yourself.
 Do not describe these two targets as though they compose automatically.
+
+> **Corrected during implementation (R15).** "Write the vtable adapter
+> yourself" is wrong: miniaudio already ships one, `g_ma_decoding_backend_
+> vtable_stbvorbis`, compiled in when `STB_VORBIS_INCLUDE_STB_VORBIS_H` is
+> defined — so the adapter is a registration, not original code. The boundary
+> this paragraph draws still holds (the two targets do not compose
+> automatically; the pack adds no runtime code of its own); only the remedy
+> was misstated. See the README for what a consumer actually writes.
 
 ### 4.3 sokol_imgui is C++
 
@@ -1284,3 +1296,28 @@ made again:
    does not; only `PARENT_SCOPE` does. §3.3's rule survived but its
    justification and its test (the §3.3 check, criterion 8 in the current
    numbering) were both wrong and were rewritten.
+
+### 10.1 After implementation
+
+The implementation surfaced one further error of fact in this document, in the
+same class as the three above, plus a decision about the document's own status.
+
+4. **"Write the vtable adapter yourself" (§4.2) was wrong.** miniaudio ships
+   `g_ma_decoding_backend_vtable_stbvorbis`, compiled in when
+   `STB_VORBIS_INCLUDE_STB_VORBIS_H` is defined; a consumer registers it rather
+   than writing it. The boundary the paragraph was drawing — the two targets do
+   not compose automatically, and the pack contributes no runtime code of its
+   own — was correct and stands. The remedy was not. Corrected in place at §4.2
+   and in the README.
+
+The finding was raised against a document already marked "approved", which is
+what settled its status: the README is the living document from here on. This
+spec records why the boundaries are where they are, on the dates in the header,
+and is not updated to track the code. The five platform bugs found in CI after
+the branch was declared complete — cp1252 decoding on Windows, a metadata file
+shadowing `<version>` on case-insensitive filesystems, CRLF translation
+defeating the vendor hash, `sorted(Path)` comparing case-insensitively on
+Windows, and sokol_app's `WinMain` needing `add_executable(... WIN32 ...)` —
+live in the README, the acceptance suite and the git history, not here. Each
+of them was invisible on Linux and each is now guarded by a scenario in
+`tools/run_tests.py`.
