@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Acceptance scenarios for game-lib. Each scenario configures a scratch CMake
 project and asserts something about the result. Python 3.11+, stdlib only."""
-import argparse, os, shutil, subprocess, sys, tempfile
+import argparse, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -277,6 +277,64 @@ def shader_incremental():
         finally:
             glsl.write_text(original_glsl)
             included.write_text(original_included)
+
+PROHIBITED = ("include_directories(", "add_definitions(", "link_libraries(")
+PROHIBITED_SET = ("CMAKE_C_FLAGS", "CMAKE_CXX_FLAGS", "CMAKE_C_STANDARD",
+                  "CMAKE_CXX_STANDARD", "CMAKE_EXECUTABLE_SUFFIX")
+
+@scenario
+def no_global_state():
+    """game-lib adds; it never changes. Cache comparison plus a command trace."""
+    with tempfile.TemporaryDirectory() as d:
+        b, trace = Path(d) / "b", Path(d) / "trace.txt"
+        cmake(ROOT / "tests" / "no-global-state", b, f"-DGAMELIB_ROOT={ROOT}",
+              "--trace-expand", f"--trace-redirect={trace}")
+
+        ours = []
+        for line in trace.read_text(errors="replace").splitlines():
+            path, _, rest = line.partition(":")
+            if not path.startswith(str(ROOT)) or "/tests/" in path:
+                continue
+            ours.append((path, rest))
+
+        # Word-boundary matches: a naive substring check would flag the
+        # correct, target-scoped commands game-lib uses throughout (e.g.
+        # "target_include_directories(" contains "include_directories(" as a
+        # literal substring) and every CMAKE_CXX_STANDARD-prefixed variable
+        # name (e.g. CMAKE_CXX_STANDARD_REQUIRED) as a false positive.
+        for cmd in PROHIBITED:
+            pat = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(cmd))
+            hits = [l for _, l in ours if pat.search(l)]
+            assert not hits, f"prohibited {cmd} in game-lib: {hits[:3]}"
+        for var in PROHIBITED_SET:
+            pat = re.compile(r"set\(\s*" + re.escape(var) + r"(?![A-Za-z0-9_])")
+            hits = [l for _, l in ours if pat.search(l)]
+            assert not hits, f"game-lib set {var}: {hits[:3]}"
+        # PARENT_SCOPE is legitimate inside a function (that is how CMake
+        # functions return); it is banned at directory scope. Our only use is
+        # gamelib_have_targets in cmake/GameLibLibrary.cmake -- plain
+        # --trace-expand text carries only the expanded command (here
+        # "set(_have_imgui_deps TRUE PARENT_SCOPE)"), not the enclosing
+        # function's name, so the whitelist is keyed on that function's one
+        # source file rather than a string that can never appear on these
+        # lines. Confirmed by grep that no other set(... PARENT_SCOPE) exists
+        # in that file, so this stays exactly as narrow as a name-based match.
+        gamelib_library_cmake = str(ROOT / "cmake" / "GameLibLibrary.cmake")
+        hits = [l for p, l in ours
+                if "PARENT_SCOPE" in l and gamelib_library_cmake not in p]
+        assert not hits, f"unexpected PARENT_SCOPE in game-lib: {hits[:3]}"
+
+
+@scenario
+def option_off():
+    """A disabled library is not declared and its CMakeLists is never parsed."""
+    with tempfile.TemporaryDirectory() as d:
+        b, trace = Path(d) / "b", Path(d) / "trace.txt"
+        cmake(ROOT / "tests" / "option-off", b, f"-DGAMELIB_ROOT={ROOT}",
+              "--trace-expand", f"--trace-redirect={trace}")
+        text = trace.read_text(errors="replace")
+        assert "libs/miniaudio/CMakeLists.txt" not in text, \
+            "libs/miniaudio/CMakeLists.txt was parsed despite GAMELIB_MINIAUDIO=OFF"
 
 def main():
     ap = argparse.ArgumentParser()
