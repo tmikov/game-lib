@@ -1,0 +1,93 @@
+# The single source of truth for what is vendored and at which revision.
+# `python3 tools/vendor.py check` verifies the tree against this file.
+
+[stb]
+url     = "https://github.com/nothings/stb"
+commit  = "2c980bb59875b0d32144a71867fbdebb2f77cd20"
+root    = "libs/stb"
+subtree = "stb"
+license = "LICENSE"
+copy = [
+  "stb_image.h", "stb_image_write.h", "stb_truetype.h", "stb_rect_pack.h",
+  "stb_ds.h", "stb_sprintf.h", "stb_perlin.h", "stb_easy_font.h",
+  "stb_vorbis.c",
+]
+
+[sokol]
+url     = "https://github.com/floooh/sokol"
+commit  = "4dc4532ee402b71c374100b1eb0a7ce7286f7896"
+root    = "libs/sokol"
+subtree = "sokol"
+license = "LICENSE"
+copy = [
+  "sokol_app.h", "sokol_gfx.h", "sokol_glue.h", "sokol_log.h",
+  "sokol_time.h", "sokol_audio.h",
+  { from = "util/sokol_imgui.h", to = "sokol_imgui.h" },
+]
+
+[imgui]
+url     = "https://github.com/ocornut/imgui"
+commit  = "334f484892a1fa881d2a927c2aff222c15458b8f"
+root    = "libs/imgui"
+subtree = "imgui"
+license = "LICENSE.txt"
+copy = [
+  "imgui.h", "imconfig.h", "imgui_internal.h",
+  "imstb_rectpack.h", "imstb_textedit.h", "imstb_truetype.h",
+  "imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp",
+  "imgui_demo.cpp",
+]
+
+[miniaudio]
+url     = "https://github.com/mackron/miniaudio"
+commit  = "9634bedb5b5a2ca38c1ee7108a9358a4e233f14d"
+root    = "libs/miniaudio"
+subtree = "miniaudio"
+license = "LICENSE"
+copy = ["miniaudio.h"]
+
+[box2d]
+url     = "https://github.com/erincatto/box2d"
+commit  = "8c661469c9507d3ad6fbd2fea3f1aa71669c2fe3"   # v3.1.1
+release = "v3.1.1"
+root    = "libs/box2d"
+subtree = "box2d"
+license = "LICENSE"
+copy = [
+  { from = "include/box2d", to = ".",   tree = true },
+  { from = "src",           to = "src", tree = true },
+]
+
+[entt]
+url     = "https://github.com/skypjack/entt"
+commit  = "85c6bba014049b5de8fad49d25424df2f1f6a8c1"   # v4.0.0
+release = "v4.0.0"
+root    = "libs/entt"
+subtree = "entt"
+license = "LICENSE"
+copy = [{ from = "single_include/entt/entt.hpp", to = "entt.hpp" }]
+
+[handmademath]
+url     = "https://github.com/HandmadeMath/HandmadeMath"
+commit  = "422bc588e9e8ae580f472f05e47c01a646acff38"   # v2.0.0
+release = "v2.0.0"
+root    = "libs/handmademath"
+subtree = "handmademath"
+license = "LICENSE"
+copy = ["HandmadeMath.h"]
+
+[itlib]
+url     = "https://github.com/iboB/itlib"
+commit  = "8a6bade082fa15a9f48a8a849f17e3305cd1e5e3"
+root    = "libs/itlib"
+subtree = "itlib"
+license = "LICENSE.txt"
+copy = [{ from = "include/itlib", to = ".", tree = true }]
+
+[sokol-shdc]
+url     = "https://github.com/floooh/sokol-tools-bin"
+commit  = "11d0cf678105d614d675e6d9bd2aaf3eeff12f8c"
+root    = "tools/sokol-shdc"
+subtree = "bin"
+license = "LICENSE"
+copy = [{ from = "bin", to = ".", tree = true }]
