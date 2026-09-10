@@ -176,6 +176,69 @@ def vendor_confinement():
         except SystemExit:
             pass
 
+@scenario
+def consumer_isolation():
+    """A consumer linking only stb_image builds, RUNS, and compiles nothing else."""
+    with tempfile.TemporaryDirectory() as d:
+        b = Path(d) / "b"
+        cmake(ROOT / "tests" / "consumer-isolation", b, f"-DGAMELIB_ROOT={ROOT}")
+        build(b)
+        exe = next(p for p in b.rglob("consumer*")
+                   if p.is_file() and os.access(p, os.X_OK) and p.suffix in ("", ".exe"))
+        r = subprocess.run([str(exe)], capture_output=True, text=True)
+        assert r.returncode == 0, f"consumer ran but failed: {r.stdout}{r.stderr}"
+
+        objs = [p.as_posix() for p in b.rglob("*") if p.suffix in (".o", ".obj")]
+        for forbidden in ("sokol", "imgui", "miniaudio", "box2d"):
+            leaked = [o for o in objs if forbidden in o]
+            assert not leaked, f"{forbidden} objects built but never linked: {leaked}"
+
+@scenario
+def headless_dummy():
+    """The dummy backend builds sokol_gfx and declares no sokol_app."""
+    with tempfile.TemporaryDirectory() as d:
+        b = Path(d) / "b"
+        cp = cmake(ROOT, b, "-DGAMELIB_SOKOL_BACKEND=dummy")
+        # Assert against the authoritative "game-lib targets:" summary line
+        # (root CMakeLists.txt, printed from GAMELIB_DECLARED_TARGETS) rather
+        # than raw stdout: a substring search over the whole configure log
+        # also matches incidental diagnostic text (e.g. a STATUS message
+        # explaining *why* sokol_app was skipped), which would fail the
+        # scenario even when the target genuinely was not declared. A test
+        # that can't find its summary line at all must fail loudly, not pass
+        # silently.
+        marker = "-- game-lib targets:"
+        line = next((l for l in cp.stdout.splitlines() if l.startswith(marker)), None)
+        assert line is not None, \
+            f"configure output has no '{marker}' summary line to check:\n{cp.stdout}"
+        declared = line[len(marker):].split()
+        assert "sokol_app" not in declared, \
+            f"sokol_app was declared under the dummy backend: {declared}"
+        build(b, "--target", "gamelib_sokol_gfx")
+
+@scenario
+def sokol_backend_rejects_invalid():
+    """An unsupported GAMELIB_SOKOL_BACKEND must fail configure with a clear
+    error naming the bad value, not silently mispair into a wrong macro
+    (a value that happens to sit in a macro slot, like SOKOL_GLCORE) and not
+    crash on an out-of-range list(GET) (an outright nonsense value)."""
+    for bad in ("SOKOL_GLCORE", "vulkan"):
+        with tempfile.TemporaryDirectory() as d:
+            b = Path(d) / "b"
+            cp = cmake(ROOT, b, f"-DGAMELIB_SOKOL_BACKEND={bad}", expect_ok=False)
+            assert cp.returncode != 0, \
+                f"configure succeeded with GAMELIB_SOKOL_BACKEND={bad}"
+            assert bad in (cp.stdout + cp.stderr), \
+                f"error message did not name the bad value {bad}:\n{cp.stdout}{cp.stderr}"
+
+@scenario
+def compile_includes():
+    """Every header-only library compiles under its documented include prefix."""
+    with tempfile.TemporaryDirectory() as d:
+        b = Path(d) / "b"
+        cmake(ROOT / "tests" / "compile-includes", b, f"-DGAMELIB_ROOT={ROOT}")
+        build(b)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("scenarios", nargs="*", choices=[*SCENARIOS, []], default=[])

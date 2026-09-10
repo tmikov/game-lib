@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.21)
+project(gamelib_consumer_isolation LANGUAGES C)
+add_subdirectory("${GAMELIB_ROOT}" gamelib EXCLUDE_FROM_ALL)
+add_executable(consumer main.c)
+target_link_libraries(consumer PRIVATE gamelib::stb_image)

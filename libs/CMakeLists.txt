@@ -1,12 +1,15 @@
 # Option-gated subdirectory list, and nothing else.
+#
+# imgui is added before sokol: sokol's sokol_imgui section calls
+# gamelib_have_targets(... imgui) and needs gamelib_imgui to already exist.
 if(GAMELIB_STB)
   add_subdirectory(stb)
 endif()
-if(GAMELIB_SOKOL)
-  add_subdirectory(sokol)
-endif()
 if(GAMELIB_IMGUI)
   add_subdirectory(imgui)
+endif()
+if(GAMELIB_SOKOL)
+  add_subdirectory(sokol)
 endif()
 if(GAMELIB_MINIAUDIO)
   add_subdirectory(miniaudio)
