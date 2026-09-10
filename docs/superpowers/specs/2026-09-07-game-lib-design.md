@@ -127,7 +127,16 @@ buys three things:
 2. **Upstream files are never edited or renamed.** Upstream's own sibling
    includes (`imgui.cpp` → `"imgui.h"`, `imgui.h` → `"imconfig.h"`) resolve by
    quote-relative lookup because those files stay in one directory together.
-3. **Wholesale replacement on update.** `vendor.py` can `rm -rf libs/sokol/sokol`
+3. **Nothing extensionless may sit in an include root.** Everything directly
+   inside `libs/<name>/` is on the consumer's header search path, and macOS and
+   Windows filesystems are case-insensitive. A metadata file named `VERSION`
+   therefore answered `#include <version>` — which C++20's `<cmath>` pulls in —
+   and broke every C++ consumer on those two platforms while passing on Linux.
+   Metadata carries an extension (`VERSION.txt`) for that reason. `LICENSE` is
+   the deliberate exception: no standard header is named `license`, and licence
+   scanners look for that exact name. An acceptance scenario checks every file
+   in every include root against the standard header names.
+4. **Wholesale replacement on update.** `vendor.py` can `rm -rf libs/sokol/sokol`
    and re-copy, with no risk of leaving a deleted upstream file behind.
 
 **`libs/<name>/<name>/` is the only subtree `vendor.py` deletes and re-creates**,
@@ -140,7 +149,7 @@ vendor-owned for one library and hand-written for another, and a wrong path in
 
 `vendor.py` writes a few files *outside* that subtree, but only ever by
 rewriting a specific file, never by deleting a directory: `tools/vendor.toml`,
-and each entry's `VERSION` and `LICENSE` — which for a library means
+and each entry's `VERSION.txt` and `LICENSE` — which for a library means
 `libs/<name>/…` and for the vendored tool means `tools/sokol-shdc/…`. Nothing
 else in the repository is machine-written, and `vendor.py check` (§7) covers
 **every** manifest entry, tools included.
@@ -1024,26 +1033,26 @@ third-party dependencies):
 
 Both `update` forms then: fetch into a temp dir, **wipe** the destination
   directories, re-copy the mapped paths, then rewrite **both `vendor.toml` and
-  `VERSION`**, and print a diffstat. Writing the manifest is not optional: it is
-  the authoritative pin, so an `update --commit` that changed only `VERSION`
+  `VERSION.txt`**, and print a diffstat. Writing the manifest is not optional: it is
+  the authoritative pin, so an `update --commit` that changed only `VERSION.txt`
   would leave `check` failing immediately.
   Fetch method, since a pinned commit is usually not branch HEAD:
   `git init` + `git remote add` + `git fetch --depth 1 origin <sha>` +
   `git checkout FETCH_HEAD`, falling back to a full clone when the server
   refuses to serve an arbitrary SHA.
 - `check` — for **every manifest entry, tool included**, assert that (a) its
-  `VERSION` file agrees with the manifest, and (b) the recorded `tree_sha256`
+  `VERSION.txt` file agrees with the manifest, and (b) the recorded `tree_sha256`
   matches a hash recomputed over the vendored subtree. Run in CI.
 
   Part (b) is what makes the guarantee real. A VERSION-versus-manifest
   comparison alone would pass happily on a vendored header someone edited by
   hand, which is precisely the drift `update --recheck` exists to repair — and a
-  repair command is useless without detection. `VERSION` therefore carries a
+  repair command is useless without detection. `VERSION.txt` therefore carries a
   `tree_sha256` line: the SHA-256 over the subtree's files in sorted path order,
   including the shader-compiler binaries.
 
-Each entry's `VERSION` file (`libs/<name>/VERSION`, or
-`tools/sokol-shdc/VERSION`) is generated and marked as such in its own text. It is
+Each entry's `VERSION.txt` file (`libs/<name>/VERSION.txt`, or
+`tools/sokol-shdc/VERSION.txt`) is generated and marked as such in its own text. It is
 redundant with the manifest deliberately: someone reading `libs/sokol/` should
 see provenance without hunting for a tool. `vendor.py check` is what keeps the
 redundancy honest.
@@ -1053,7 +1062,7 @@ day the design was written. It is a starting point, not a requirement: two of
 the four moved within a day (sokol to `c24221dc` and imgui to `148d128f` by
 2026-09-08), so the implementer should run `vendor.py update` on each library at
 the start of implementation and commit whatever SHAs that produces. What matters
-is that the manifest, the `VERSION` files and the vendored trees agree — which
+is that the manifest, the `VERSION.txt` files and the vendored trees agree — which
 `check` enforces — not that any particular commit was chosen.
 
 | library | version | commit |

@@ -313,24 +313,24 @@ def shader_incremental():
 
         glsl = ROOT / "examples" / "shader" / "triangle.glsl"
         included = ROOT / "examples" / "shader" / "tint.glsl"
-        original_glsl = glsl.read_text()
-        original_included = included.read_text()
+        original_glsl = glsl.read_text(encoding="utf-8")
+        original_included = included.read_text(encoding="utf-8")
         try:
             first = hdr.stat().st_mtime_ns
             time.sleep(1.1)                      # coarse mtime granularity
-            glsl.write_text(original_glsl + "\n// touch\n")
+            glsl.write_text(original_glsl + "\n// touch\n", encoding="utf-8")
             build(b, "--target", "shader")
             second = hdr.stat().st_mtime_ns
             assert second != first, "editing the .glsl did not regenerate"
 
             time.sleep(1.1)
-            included.write_text(original_included + "\n// touch\n")
+            included.write_text(original_included + "\n// touch\n", encoding="utf-8")
             build(b, "--target", "shader")
             assert hdr.stat().st_mtime_ns != second, \
                 "editing an @included file did not regenerate (DEPFILE not wired up)"
         finally:
-            glsl.write_text(original_glsl)
-            included.write_text(original_included)
+            glsl.write_text(original_glsl, encoding="utf-8")
+            included.write_text(original_included, encoding="utf-8")
 
 PROHIBITED = ("include_directories(", "add_definitions(", "link_libraries(")
 PROHIBITED_SET = ("CMAKE_C_FLAGS", "CMAKE_CXX_FLAGS", "CMAKE_C_STANDARD",
@@ -352,7 +352,7 @@ def no_global_state():
         # location/command boundary regardless of colons earlier in the path.
         loc_re = re.compile(r"^(.*)\(\d+\):")
         ours = []
-        for line in trace.read_text(errors="replace").splitlines():
+        for line in trace.read_text(encoding="utf-8", errors="replace").splitlines():
             m = loc_re.match(line)
             if not m:
                 continue
@@ -409,7 +409,7 @@ def option_off():
         b, trace = Path(d) / "b", Path(d) / "trace.txt"
         cmake(ROOT / "tests" / "option-off", b, f"-DGAMELIB_ROOT={ROOT}",
               "--trace-expand", f"--trace-redirect={trace}")
-        text = trace.read_text(errors="replace")
+        text = trace.read_text(encoding="utf-8", errors="replace")
         # An empty (or truncated) trace file would make the assertion below
         # pass vacuously -- it only proves the string is absent, not that the
         # trace actually captured the configure.
@@ -417,6 +417,128 @@ def option_off():
             f"trace file has no evidence of a configure at all: {text[:500]!r}"
         assert "libs/miniaudio/CMakeLists.txt" not in text, \
             "libs/miniaudio/CMakeLists.txt was parsed despite GAMELIB_MINIAUDIO=OFF"
+
+@scenario
+def include_roots_shadow_nothing():
+    """No file in a library's include root may shadow a standard header.
+
+    Each target's PUBLIC include directory is libs/<name>/, so every file
+    sitting directly in it is on the consumer's header search path. macOS and
+    Windows filesystems are case-insensitive, so a metadata file named VERSION
+    answered `#include <version>` -- which C++20's <cmath> pulls in -- and broke
+    every C++ consumer on those platforms while passing on Linux. Extensions are
+    the fix (VERSION.txt); this keeps it fixed."""
+    # Extensionless C++ and C standard headers, lowercased. Not exhaustive over
+    # every C++23 addition, but covers everything a vendored library here is
+    # plausibly named after.
+    std = {
+        "algorithm", "any", "array", "atomic", "barrier", "bit", "bitset",
+        "charconv", "chrono", "codecvt", "compare", "complex", "concepts",
+        "condition_variable", "coroutine", "deque", "exception", "execution",
+        "expected", "filesystem", "format", "forward_list", "fstream",
+        "functional", "future", "initializer_list", "iomanip", "ios", "iosfwd",
+        "iostream", "istream", "iterator", "latch", "limits", "list", "locale",
+        "map", "memory", "memory_resource", "mutex", "new", "numbers",
+        "numeric", "optional", "ostream", "print", "queue", "random", "ranges",
+        "ratio", "regex", "scoped_allocator", "semaphore", "set", "shared_mutex",
+        "source_location", "span", "spanstream", "sstream", "stack",
+        "stacktrace", "stdexcept", "stdfloat", "stop_token", "streambuf",
+        "string", "string_view", "syncstream", "system_error", "thread",
+        "tuple", "typeindex", "typeinfo", "type_traits", "unordered_map",
+        "unordered_set", "utility", "valarray", "variant", "vector", "version",
+    }
+    offenders = []
+    for lib in sorted((ROOT / "libs").iterdir()):
+        if not lib.is_dir():
+            continue
+        for entry in lib.iterdir():
+            if entry.name.lower() in std:
+                offenders.append(f"{entry.relative_to(ROOT)} shadows <{entry.name.lower()}>")
+    assert not offenders, (
+        "files in an include root shadow standard headers on case-insensitive "
+        "filesystems: " + "; ".join(offenders))
+
+@scenario
+def vendor_hash_is_platform_stable():
+    """tree_sha256 must not depend on the platform's path-comparison rules.
+
+    Sorting Path objects is case-insensitive on Windows and case-sensitive on
+    POSIX, so the naive `sorted(rglob(...))` hashed identical bytes in a
+    different order on each and reported every entry as modified. The hash is
+    ordered by the relative POSIX string instead. This checks that choice held,
+    and first checks the hazard is still live in this repository -- otherwise it
+    would pass for the wrong reason once nothing has a mixed-case filename."""
+    import hashlib, importlib.util, tomllib
+    spec = importlib.util.spec_from_file_location("v", ROOT / "tools" / "vendor.py")
+    v = importlib.util.module_from_spec(spec); spec.loader.exec_module(v)
+    manifest = tomllib.loads((ROOT / "tools" / "vendor.toml").read_text(encoding="utf-8"))
+
+    def hash_in_order(root, rels):
+        h = hashlib.sha256()
+        for rel in rels:
+            h.update(rel.encode()); h.update(b"\0")
+            h.update((root / rel).read_bytes()); h.update(b"\0")
+        return h.hexdigest()
+
+    hazard_seen = False
+    for name, entry in manifest.items():
+        root = ROOT / entry["root"] / entry["subtree"]
+        rels = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
+        canonical = sorted(rels)
+        casefolded = sorted(rels, key=str.lower)          # what Windows would do
+        if canonical != casefolded:
+            hazard_seen = True
+            assert v.tree_sha256(root) != hash_in_order(root, casefolded), (
+                f"{name}: tree_sha256 follows case-insensitive ordering; it must "
+                f"order by the relative POSIX string so the value is identical on "
+                f"Windows and POSIX")
+        assert v.tree_sha256(root) == hash_in_order(root, canonical), (
+            f"{name}: tree_sha256 is not ordering by relative POSIX path")
+
+    assert hazard_seen, (
+        "no vendored tree has a filename that sorts differently case-folded, so "
+        "this scenario proved nothing -- it passed vacuously")
+
+
+@scenario
+def sokol_app_executables_are_win32():
+    """Every executable linking sokol_app must be declared add_executable(x WIN32 ...).
+
+    On Win32 sokol_app.h defaults to SOKOL_WIN32_FORCE_WINMAIN, so it supplies
+    WinMain and the app's own main() is never referenced. A console-subsystem
+    executable then fails to link with `LNK2019: unresolved external symbol
+    main`, which is what four examples did on windows-latest while passing on
+    Linux and macOS. WIN32 is ignored by every non-Windows generator, so it
+    costs nothing to always write it. game-lib cannot fix this from its side:
+    the property belongs to the consumer's target, and the global
+    CMAKE_WIN32_EXECUTABLE is forbidden by the no-global-state rule -- so the
+    examples have to teach it by example."""
+    offenders, checked = [], []
+    for cml in sorted((ROOT / "examples").rglob("CMakeLists.txt")) + \
+               sorted((ROOT / "tests").rglob("CMakeLists.txt")):
+        text = cml.read_text(encoding="utf-8")
+        # Strip comments so the explanatory note above each add_executable()
+        # cannot itself satisfy the match.
+        code = re.sub(r"#[^\n]*", "", text)
+        linked = {t for t in re.findall(
+            r"target_link_libraries\s*\(\s*([A-Za-z0-9_.:-]+)(.*?)\)", code, re.S)
+            if "gamelib::sokol_app" in t[1]}
+        win32 = dict(re.findall(
+            r"add_executable\s*\(\s*([A-Za-z0-9_.:-]+)\s+(WIN32\s+)?", code))
+        for target, _ in linked:
+            if target not in win32:
+                continue          # linked in a different file; nothing to check
+            checked.append(f"{cml.parent.name}/{target}")
+            if not win32[target]:
+                offenders.append(
+                    f"{cml.relative_to(ROOT)}: add_executable({target} ...) links "
+                    f"gamelib::sokol_app but is missing WIN32")
+    assert not offenders, (
+        "these will fail to link on Windows with `unresolved external symbol "
+        "main`: " + "; ".join(offenders))
+    assert checked, (
+        "no executable linking gamelib::sokol_app was found, so this scenario "
+        "proved nothing -- it passed vacuously")
 
 def main():
     ap = argparse.ArgumentParser()

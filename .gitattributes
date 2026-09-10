@@ -1,0 +1,9 @@
+# Vendored trees must be byte-identical to upstream on every platform, and
+# vendor.py's tree_sha256 hashes raw bytes. Git for Windows converts LF to CRLF
+# on checkout by default, which changed every hash and failed `vendor.py check`
+# on windows-latest while Linux and macOS passed.
+#
+# Disable end-of-line conversion repo-wide: whatever upstream committed is what
+# lands on disk. Not `text=auto eol=lf`, which would still normalise on commit
+# and so would rewrite a vendored file that legitimately contains CRLF.
+* -text

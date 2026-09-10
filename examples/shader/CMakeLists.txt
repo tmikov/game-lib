@@ -1,4 +1,7 @@
-add_executable(shader shader.c)
+# WIN32 is required on Windows and ignored everywhere else: sokol_app
+# supplies WinMain rather than main there, so the executable has to go in
+# the GUI subsystem or the linker reports an unresolved `main`.
+add_executable(shader WIN32 shader.c)
 target_link_libraries(shader PRIVATE
     gamelib::sokol_app
     gamelib::sokol_gfx

@@ -25,7 +25,7 @@ game-lib itself, only to maintain or verify it.
 ```cmake
 add_subdirectory(third_party/game-lib EXCLUDE_FROM_ALL)
 
-add_executable(mygame main.c)
+add_executable(mygame WIN32 main.c)
 target_link_libraries(mygame PRIVATE
     gamelib::sokol_app
     gamelib::sokol_gfx
@@ -43,6 +43,22 @@ those are internal and unversioned.
 
 Every target is namespaced, so a typo in what you link (`gamelib::sokol_gfxx`)
 is a configure-time error, not a silent `-lsokol_gfxx` passed to the linker.
+
+### `WIN32` if you link `gamelib::sokol_app`
+
+`sokol_app.h` defines `SOKOL_WIN32_FORCE_WINMAIN` by default, so on Windows it
+supplies `WinMain` and your `main()` is never called. A console-subsystem
+executable therefore fails to *link* with `unresolved external symbol main`.
+Declaring the target `add_executable(mygame WIN32 main.c)` puts it in the GUI
+subsystem and fixes it; the `WIN32` keyword is ignored by every non-Windows
+generator, so write it unconditionally.
+
+game-lib deliberately does not do this for you. The subsystem is a property of
+*your* executable, and the only lever a linked library could pull is the
+global `CMAKE_WIN32_EXECUTABLE`, which would silently change every other
+target in your project — exactly what "game-lib adds, it never changes"
+forbids. Every windowed example is written `add_executable(... WIN32 ...)` for
+the same reason, and an acceptance scenario keeps them that way.
 
 ## Options
 
