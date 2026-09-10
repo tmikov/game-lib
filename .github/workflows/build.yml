@@ -1,0 +1,39 @@
+name: build
+on: [push, pull_request]
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install Linux deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y
+             libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libasound2-dev
+      - name: Verify vendored trees
+        run: python3 tools/vendor.py check
+      - name: Acceptance scenarios
+        run: python3 tools/run_tests.py
+      # Windowed examples are built, not run: sokol_app needs a display.
+
+  headless:
+    # The real regression test for the gfx/app split: a container with no X11
+    # development packages at all must still configure and build sokol_gfx.
+    runs-on: ubuntu-latest
+    container: debian:bookworm-slim
+    steps:
+      - name: Minimal toolchain, deliberately without libx11-dev
+        run: apt-get update && apt-get install -y build-essential cmake python3 git
+      - uses: actions/checkout@v4
+      - name: Configure and build with the dummy backend
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug \
+                -DGAMELIB_SOKOL_BACKEND=dummy \
+                -DGAMELIB_IMGUI=OFF -DGAMELIB_MINIAUDIO=OFF
+          cmake --build build --target gamelib_sokol_gfx gamelib_box2d gamelib_stb_image
